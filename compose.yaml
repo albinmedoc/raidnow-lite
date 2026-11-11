@@ -1,0 +1,16 @@
+services:
+  raidnow-lite:
+    image: ghcr.io/albinmedoc/raidnow-lite:latest
+    # Use `build: .` instead while developing locally.
+    restart: unless-stopped
+    ports:
+      - "4173:4173"
+    environment:
+      RAIDNOW_MODE: demo
+      # RAIDNOW_LIVE_WRITES: "false"
+      # RAIDNOW_POLL_INTERVAL_MS: "15000"
+    volumes:
+      - raidnow-data:/app/data
+
+volumes:
+  raidnow-data:

@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="sv">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#08090a">
+  <title>Raid NOW Lite</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar compact-topbar">
+    <a class="brand" href="#raids" aria-label="Raid NOW Lite">
+      <span class="brand-mark">R</span>
+      <span>Raid NOW <strong>Lite</strong></span>
+    </a>
+    <div class="header-actions">
+      <span id="modeBadge" class="pill">Laddar…</span>
+      <button id="notificationButton" class="icon-text-button secondary">Notiser</button>
+      <button id="settingsButton" class="icon-text-button secondary">Profil</button>
+    </div>
+  </header>
+
+  <main class="search-shell">
+    <section id="statusCard" class="status-card compact-status hidden" aria-live="polite">
+      <div>
+        <div class="status-line"><span id="statusDot" class="status-dot"></span><strong id="statusTitle">Söker</strong></div>
+        <p id="statusText">Sökningen körs i bakgrunden.</p>
+        <div class="status-meta"><span id="lastContact">Ingen kontakt ännu</span><span id="nextPoll">—</span></div>
+      </div>
+      <button id="stopSearch" class="danger">Stoppa sökning</button>
+    </section>
+
+    <section id="matchedPanel" class="active-raid-panel hidden" aria-live="assertive">
+      <div class="active-raid-heading">
+        <div>
+          <p class="eyebrow">RAID REDO</p>
+          <h2 id="matchedBoss">Raid hittad</h2>
+          <p id="activeRaidMeta" class="muted">Hämtar raidinformation…</p>
+        </div>
+        <div class="actions">
+          <button id="copyCode" class="primary">Kopiera trainer code</button>
+          <button id="leaveRaid" class="danger">Lämna raiden</button>
+        </div>
+      </div>
+      <div class="active-raid-details">
+        <div><span class="detail-label">Host</span><strong id="activeRaidHost">—</strong></div>
+        <div><span class="detail-label">Spelare</span><strong id="activeRaidCount">—</strong></div>
+        <div><span class="detail-label">Redo</span><strong id="activeRaidReady">—</strong></div>
+      </div>
+      <div>
+        <h3>Spelare i raiden</h3>
+        <div id="activeRaidPlayers" class="player-list"><p class="muted">Hämtar spelare…</p></div>
+      </div>
+    </section>
+
+    <section id="raids" class="raid-search-view">
+      <div class="search-heading">
+        <div>
+          <p class="eyebrow">KOMBINERAD SÖKNING</p>
+          <h1>Vilken Pokémon vill du raida?</h1>
+          <p id="raidUpdated" class="muted">Hämtar raider…</p>
+        </div>
+        <div class="toolbar">
+          <select id="rankFilter" aria-label="Filtrera raidnivå"><option value="0">Alla nivåer</option><option value="5">Tier 5</option><option value="4">Mega</option><option value="3">Tier 3</option><option value="1">Tier 1</option><option value="10">Dynamax</option><option value="11">Gigantamax</option></select>
+          <button id="filterButton" class="secondary">Filter</button>
+          <button id="refreshRaids" class="secondary">Uppdatera</button>
+        </div>
+      </div>
+      <div id="raidGrid" class="raid-grid" aria-live="polite"></div>
+      <div class="quick-actions">
+        <span id="quickSelection">Välj minst en Pokémon</span>
+        <button id="quickStartSearch" class="primary" disabled>Sök och gå med</button>
+      </div>
+      <p id="searchMessage" class="form-message search-message"></p>
+    </section>
+  </main>
+
+  <dialog id="profileDialog" class="modal">
+    <form method="dialog" class="modal-header"><div><p class="eyebrow">PROFIL</p><h2>Din trainer-profil</h2></div><button class="modal-close secondary" value="cancel" aria-label="Stäng">Stäng</button></form>
+    <p class="muted">Behövs först när du startar en sökning.</p>
+    <form id="profileForm" class="form-grid">
+      <label>Trainer name<input name="trainerName" autocomplete="off" maxlength="30" placeholder="Albin123" required></label>
+      <label>Trainer level<input name="level" type="number" min="1" max="80" placeholder="50" required></label>
+      <label class="wide">Trainer code<input name="trainerCode" inputmode="numeric" autocomplete="off" placeholder="0000 0000 0000" required></label>
+      <label>Land<select name="countryCode" required><option value="">Välj land</option><option value="se">Sverige</option><option value="dk">Danmark</option><option value="no">Norge</option><option value="fi">Finland</option><option value="de">Tyskland</option><option value="gb">Storbritannien</option><option value="us">USA</option><option value="jp">Japan</option><option value="world">Övrigt</option></select></label>
+      <div class="wide modal-actions"><button class="primary" type="submit">Spara och fortsätt</button><span id="profileMessage" class="form-message"></span></div>
+    </form>
+  </dialog>
+
+  <dialog id="filterDialog" class="modal small-modal">
+    <form method="dialog" class="modal-header"><div><p class="eyebrow">FILTER</p><h2>Sökinställningar</h2></div><button class="modal-close secondary" value="cancel" aria-label="Stäng">Stäng</button></form>
+    <div class="form-grid compact">
+      <label>Minsta hostnivå<input id="hostLevel" type="number" min="0" max="80" value="0"></label>
+      <label>Väderboost<select id="weatherBoost"><option value="0">Spelar ingen roll</option><option value="1">Krävs</option><option value="2">Får inte finnas</option></select></label>
+    </div>
+  </dialog>
+
+  <dialog id="connectionDialog" class="modal">
+    <form method="dialog" class="modal-header"><div><p class="eyebrow">ANSLUTNING</p><h2>Återställ Raid NOW-session</h2></div><button class="modal-close secondary" value="cancel" aria-label="Stäng">Stäng</button></form>
+    <article id="sessionPanel">
+      <p class="muted">Det här visas endast om Raid NOW-sessionen behöver återställas.</p>
+      <code class="token-command">copy(document.querySelector('#app').__vue__.gofriend_token)</code>
+      <form id="sessionForm" class="form-grid">
+        <label class="wide">Anonym session-token<input name="token" type="password" autocomplete="off" required></label>
+        <div class="wide"><button class="primary" type="submit">Anslut session</button><span id="sessionMessage" class="form-message"></span></div>
+      </form>
+    </article>
+    <details id="loginPanel" class="profile-spacing">
+      <summary>Alternativ: logga in med konto</summary>
+      <form id="loginForm" class="form-grid">
+        <label class="wide">E-post<input name="email" type="email" autocomplete="username" required></label>
+        <label class="wide">Lösenord<input name="password" type="password" autocomplete="current-password" required></label>
+        <div class="wide"><button class="primary" type="submit">Logga in</button><span id="loginMessage" class="form-message"></span></div>
+      </form>
+    </details>
+  </dialog>
+
+  <footer>Raid NOW Lite · sökningen fortsätter även när sidan är stängd</footer>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
