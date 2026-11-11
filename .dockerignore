@@ -1,7 +1,7 @@
 .git
 .github
 node_modules
-data
+/data
 *.log
 .env
 .env.*
