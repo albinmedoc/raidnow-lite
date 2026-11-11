@@ -8,6 +8,7 @@ A small, self-hosted, mobile-friendly client for Raid NOW. It keeps raid searchi
 ## Features
 
 - Lists the full currently selectable Auto Join boss pool.
+- Loads Pokémon display names and images from Raid NOW's own page metadata instead of maintaining a local Japanese-to-English mapping.
 - Selects one or several raid bosses from a compact responsive interface.
 - Runs a fixed hybrid search strategy:
   - creates a normal Auto Join queue entry; and

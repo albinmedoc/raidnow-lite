@@ -1,4 +1,28 @@
 const DEFAULT_URL = 'https://pokemongo-get.com/wp-content/themes/simplicity2-child/include/gofriend_enraid_masta.php?v=2025121601';
+const RAIDNOW_PAGE_URL = 'https://raidnow.leekduck.com/';
+
+function parseAssignedJson(source, variableName) {
+  const assignment = new RegExp(`\\bvar\\s+${variableName}\\s*=`).exec(source);
+  if (!assignment) throw new Error(`Raid NOW metadata variable ${variableName} was not found.`);
+  const start = source.indexOf('{', assignment.index + assignment[0].length);
+  if (start < 0) throw new Error(`Raid NOW metadata variable ${variableName} was invalid.`);
+  let depth = 0;
+  let quoted = false;
+  let escaped = false;
+  for (let index = start; index < source.length; index += 1) {
+    const character = source[index];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === '"') quoted = false;
+      continue;
+    }
+    if (character === '"') quoted = true;
+    else if (character === '{') depth += 1;
+    else if (character === '}' && --depth === 0) return JSON.parse(source.slice(start, index + 1));
+  }
+  throw new Error(`Raid NOW metadata variable ${variableName} was incomplete.`);
+}
 
 function appendValue(body, key, value) {
   if (Array.isArray(value)) {
@@ -17,6 +41,8 @@ export class RaidNowAdapter {
   #lastContext = null;
   #currentBosses = [];
   #currentBossesAt = 0;
+  #pokemonMetadata = null;
+  #pokemonMetadataAt = 0;
 
   constructor({ fetchImpl = fetch, url = DEFAULT_URL, allowWrites = false, token = '', csrfToken = '' } = {}) {
     this.#fetch = fetchImpl;
@@ -69,12 +95,24 @@ export class RaidNowAdapter {
   }
 
   async listCurrentRaidBosses() {
-    const response = await this.#post('line_matching_get_list', { token: this.#token });
+    const [response, metadata] = await Promise.all([
+      this.#post('line_matching_get_list', { token: this.#token }),
+      this.#listPokemonMetadata()
+    ]);
     if (response?.status === 'error') throw new Error(response.text || 'Raid NOW rejected the Auto Join list request.');
     const list = Array.isArray(response?.list) ? response.list : [];
     const bosses = list
       .filter((entry) => entry?.rank && entry?.pokemon && entry.pokemon !== 'egg')
-      .map((entry) => ({ rank: String(entry.rank), pokemon: String(entry.pokemon) }));
+      .map((entry) => {
+        const pokemon = String(entry.pokemon);
+        const details = metadata[pokemon] || {};
+        return {
+          rank: String(entry.rank),
+          pokemon,
+          displayName: String(details.en || pokemon),
+          image: String(details.image || '')
+        };
+      });
     this.#currentBosses = bosses;
     this.#currentBossesAt = Date.now();
     return bosses;
@@ -224,6 +262,25 @@ export class RaidNowAdapter {
       return JSON.parse(text);
     } catch {
       throw new Error('Raid NOW returned an invalid JSON response.');
+    }
+  }
+
+  async #listPokemonMetadata() {
+    if (this.#pokemonMetadata && Date.now() - this.#pokemonMetadataAt < 60 * 60_000) return this.#pokemonMetadata;
+    try {
+      const response = await this.#fetch(RAIDNOW_PAGE_URL, {
+        method: 'GET',
+        headers: {
+          accept: 'text/html',
+          'user-agent': 'Mozilla/5.0 RaidNowLite/0.1'
+        }
+      });
+      if (!response.ok) throw new Error(`Raid NOW returned HTTP ${response.status}.`);
+      this.#pokemonMetadata = parseAssignedJson(await response.text(), 'aryPokemon');
+      this.#pokemonMetadataAt = Date.now();
+      return this.#pokemonMetadata;
+    } catch {
+      return {};
     }
   }
 

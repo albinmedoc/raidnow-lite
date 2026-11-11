@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import { RaidNowAdapter } from '../src/adapters/raidnow-adapter.js';
 
 function fakeFetch(responses, calls) {
-  return async (url, options) => {
+  return async (url, options = {}) => {
+    if (options.method === 'GET') {
+      return { ok: true, status: 200, async text() { return '<script>var aryPokemon = {}; var aryPokeRaid = {};</script>'; } };
+    }
     calls.push({ url, options, body: new URLSearchParams(options.body) });
     const value = responses.shift();
     return { ok: true, status: 200, headers: { get() { return null; } }, async json() { return value; }, async text() { return JSON.stringify(value); } };
@@ -118,12 +121,45 @@ test('loads every selectable boss from the original Auto Join list', async () =>
   const adapter = new RaidNowAdapter({ fetchImpl, token: 'anonymous-token' });
   const bosses = await adapter.listCurrentRaidBosses();
   assert.deepEqual(bosses, [
-    { rank: '1', pokemon: 'ピカチュウ' },
-    { rank: '5', pokemon: 'ギラティナ' },
-    { rank: '5', pokemon: 'ザシアン(けんのおう)' }
+    { rank: '1', pokemon: 'ピカチュウ', displayName: 'ピカチュウ', image: '' },
+    { rank: '5', pokemon: 'ギラティナ', displayName: 'ギラティナ', image: '' },
+    { rank: '5', pokemon: 'ザシアン(けんのおう)', displayName: 'ザシアン(けんのおう)', image: '' }
   ]);
   assert.equal(calls[0].body.get('type'), 'line_matching_get_list');
   assert.equal(calls[0].body.get('token'), 'anonymous-token');
+});
+
+test('loads boss display names and images from Raid NOW metadata', async () => {
+  const calls = [];
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url, options });
+    if (options.method === 'POST') {
+      return {
+        ok: true,
+        status: 200,
+        async text() {
+          return JSON.stringify({ list: [{ rank: '11', pokemon: 'キョダイマックスリザードン' }] });
+        }
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      async text() {
+        return '<script>var aryPokemon = {"キョダイマックスリザードン":{"en":"Gigantamax Charizard","image":"https://example.test/charizard.png"}}; var aryPokeRaid = {};</script>';
+      }
+    };
+  };
+  const adapter = new RaidNowAdapter({ fetchImpl, token: 'anonymous-token' });
+
+  assert.deepEqual(await adapter.listCurrentRaidBosses(), [{
+    rank: '11',
+    pokemon: 'キョダイマックスリザードン',
+    displayName: 'Gigantamax Charizard',
+    image: 'https://example.test/charizard.png'
+  }]);
+  assert.equal(calls[1].url, 'https://raidnow.leekduck.com/');
+  assert.equal(calls[1].options.method, 'GET');
 });
 
 test('fast joins a specific lobby using the original child_post_fast contract', async () => {

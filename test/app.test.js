@@ -107,8 +107,8 @@ test('returns the complete Auto Join boss list instead of homepage raid posts', 
     async listRaids() { homepageListCalled = true; return []; },
     async listCurrentRaidBosses() {
       return [
-        { rank: '5', pokemon: 'ザシアン(けんのおう)' },
-        { rank: '3', pokemon: 'ピカチュウ' }
+        { rank: '5', pokemon: 'ザシアン(けんのおう)', displayName: 'Zacian (Crowned Sword)', image: 'https://example.test/zacian.png' },
+        { rank: '3', pokemon: 'ピカチュウ', displayName: 'Pikachu', image: 'https://example.test/pikachu.png' }
       ];
     }
   });
