@@ -239,7 +239,7 @@ export function createApp({ adapter, store, sessionManager = null, pushNotifier 
       }
       if (request.method === 'POST' && url.pathname === '/api/autojoin/start') {
         if (restoreLocked) return sendJson(response, 409, { message: restoreFailure.error });
-        if (!['idle', 'stopped'].includes(worker.status().state)) return sendJson(response, 409, { message: 'An Auto Join search is already active.' });
+        if (!['idle', 'stopped', 'error'].includes(worker.status().state)) return sendJson(response, 409, { message: 'An Auto Join search is already active.' });
         const selection = await readJson(request, maxBodyBytes);
         const profile = sessionManager
           ? normalizeProfile(selection.profile ?? {})

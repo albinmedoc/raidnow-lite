@@ -178,6 +178,43 @@ test('starts server-owned Auto Join and reaches matched state', async () => {
   } finally { await close(app); }
 });
 
+test('allows a new Auto Join attempt after a terminal start rejection with no remaining resources', async () => {
+  let attempts = 0;
+  const adapter = new MockRaidNowAdapter();
+  adapter.createMatching = async () => {
+    attempts += 1;
+    if (attempts === 1) return { status: 'error', text: 'Within 2 mins, you have recruited or participated in a raid. Check the list and try again later.' };
+    return { status: 'success' };
+  };
+  const app = await startTestApp(adapter);
+  const body = {
+    ranks: ['5'],
+    pokemon: ['Giratina'],
+    strategy: 'hybrid',
+    profile: { trainerName: 'Albin123', trainerCode: '123456789012', level: 50, countryCode: 'se' }
+  };
+  try {
+    const profile = await fetch(`${app.baseUrl}/api/profile`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body.profile)
+    });
+    assert.equal(profile.status, 200);
+    const first = await fetch(`${app.baseUrl}/api/autojoin/start`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
+    });
+    assert.equal(first.status, 200);
+    for (let attempt = 0; attempt < 50 && app.worker.status().state !== 'error'; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
+    assert.equal(app.worker.status().state, 'error');
+
+    const second = await fetch(`${app.baseUrl}/api/autojoin/start`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
+    });
+    assert.equal(second.status, 200);
+    assert.equal(attempts, 2);
+  } finally { await close(app); }
+});
+
 test('default app persists durable actor snapshots instead of public status', async () => {
   const adapter = {
     async listRaids() { return []; },
