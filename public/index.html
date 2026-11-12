@@ -4,11 +4,16 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#08090a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>Raid NOW Lite</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/qr.css">
 </head>
 <body>
   <header class="topbar compact-topbar">
@@ -18,10 +23,12 @@
     </a>
     <div class="header-actions">
       <span id="modeBadge" class="pill">Laddar…</span>
-      <button id="notificationButton" class="icon-text-button secondary">Notiser</button>
-      <button id="settingsButton" class="icon-text-button secondary">Profil</button>
+      <button id="installButton" class="icon-text-button secondary hidden" type="button">Installera</button>
+      <button id="notificationButton" class="icon-text-button secondary" aria-describedby="notificationHelp">Notiser</button>
+      <button id="settingsButton" class="icon-text-button secondary">Profil <span id="trainerNameLabel" class="trainer-name">Ej sparad</span></button>
     </div>
   </header>
+  <p id="notificationHelp" class="notification-help" aria-live="polite">På iPhone/iPad: lägg först till appen på hemskärmen, öppna den installerade appen och använd iOS/iPadOS 16.4+.</p>
 
   <main class="search-shell">
     <section id="statusCard" class="status-card compact-status hidden" aria-live="polite">
@@ -42,10 +49,12 @@
         </div>
         <div class="actions">
           <button id="copyCode" class="primary">Kopiera trainer code</button>
+          <button id="showQrCode" class="secondary" disabled>Visa QR-kod</button>
           <button id="leaveRaid" class="danger">Lämna raiden</button>
         </div>
       </div>
       <div class="active-raid-details">
+        <div><span class="detail-label">Trainer code</span><code id="activeRaidCode" class="trainer-code" tabindex="0">—</code></div>
         <div><span class="detail-label">Host</span><strong id="activeRaidHost">—</strong></div>
         <div><span class="detail-label">Spelare</span><strong id="activeRaidCount">—</strong></div>
         <div><span class="detail-label">Redo</span><strong id="activeRaidReady">—</strong></div>
@@ -64,6 +73,7 @@
           <p id="raidUpdated" class="muted">Hämtar raider…</p>
         </div>
         <div class="toolbar">
+          <input id="bossSearch" type="search" maxlength="100" placeholder="Sök Pokémon" aria-label="Sök Pokémon efter engelskt namn eller upstream-ID">
           <select id="rankFilter" aria-label="Filtrera raidnivå"><option value="0">Alla nivåer</option><option value="5">Tier 5</option><option value="4">Mega</option><option value="3">Tier 3</option><option value="1">Tier 1</option><option value="10">Dynamax</option><option value="11">Gigantamax</option></select>
           <button id="filterButton" class="secondary">Filter</button>
           <button id="refreshRaids" class="secondary">Uppdatera</button>
@@ -71,12 +81,22 @@
       </div>
       <div id="raidGrid" class="raid-grid" aria-live="polite"></div>
       <div class="quick-actions">
-        <span id="quickSelection">Välj minst en Pokémon</span>
+        <span><span id="quickSelection">Välj minst en Pokémon</span><small id="activeSelection" class="selection-detail"></small></span>
         <button id="quickStartSearch" class="primary" disabled>Sök och gå med</button>
       </div>
       <p id="searchMessage" class="form-message search-message"></p>
     </section>
   </main>
+
+  <dialog id="trainerCodeQrDialog" class="modal qr-modal" aria-labelledby="trainerCodeQrTitle">
+    <div class="qr-dialog-card">
+      <form method="dialog" class="modal-header"><div><p class="eyebrow">HOSTENS TRAINER CODE</p><h2 id="trainerCodeQrTitle">Skanna QR-koden</h2></div><button id="closeTrainerCodeQr" class="modal-close secondary" value="cancel" aria-label="Stäng QR-kod">Stäng</button></form>
+      <p class="muted">QR-koden skapas lokalt i din webbläsare och innehåller endast hostens tolv siffror.</p>
+      <img id="trainerCodeQrImage" class="trainer-code-qr" alt="" hidden>
+      <code id="trainerCodeQrFallback" class="trainer-code qr-fallback" tabindex="0">—</code>
+      <button id="copyQrCode" class="primary" type="button">Kopiera trainer code</button>
+    </div>
+  </dialog>
 
   <dialog id="profileDialog" class="modal">
     <form method="dialog" class="modal-header"><div><p class="eyebrow">PROFIL</p><h2>Din trainer-profil</h2></div><button class="modal-close secondary" value="cancel" aria-label="Stäng">Stäng</button></form>
@@ -88,6 +108,11 @@
       <label>Land<select name="countryCode" required><option value="">Välj land</option><option value="se">Sverige</option><option value="dk">Danmark</option><option value="no">Norge</option><option value="fi">Finland</option><option value="de">Tyskland</option><option value="gb">Storbritannien</option><option value="us">USA</option><option value="jp">Japan</option><option value="world">Övrigt</option></select></label>
       <div class="wide modal-actions"><button class="primary" type="submit">Spara och fortsätt</button><span id="profileMessage" class="form-message"></span></div>
     </form>
+    <div class="browser-reset">
+      <div><strong>Denna webbläsare</strong><p class="muted">Tar bort lokal profil, lokala val och den här webbläsarens serversession.</p></div>
+      <button id="resetBrowser" class="danger" type="button">Återställ denna webbläsare</button>
+    </div>
+    <p id="resetMessage" class="form-message" aria-live="polite"></p>
   </dialog>
 
   <dialog id="filterDialog" class="modal small-modal">
@@ -100,14 +125,14 @@
 
   <dialog id="connectionDialog" class="modal">
     <form method="dialog" class="modal-header"><div><p class="eyebrow">ANSLUTNING</p><h2>Återställ Raid NOW-session</h2></div><button class="modal-close secondary" value="cancel" aria-label="Stäng">Stäng</button></form>
-    <article id="sessionPanel">
-      <p class="muted">Det här visas endast om Raid NOW-sessionen behöver återställas.</p>
-      <code class="token-command">copy(document.querySelector('#app').__vue__.gofriend_token)</code>
+    <p class="muted">Raid NOW Lite fungerar normalt anonymt utan konto eller token. Alternativen nedan är endast för avancerad återställning efter ett verkligt sessionsfel.</p>
+    <details id="sessionPanel">
+      <summary>Diagnostik: importera en befintlig session-token</summary>
       <form id="sessionForm" class="form-grid">
-        <label class="wide">Anonym session-token<input name="token" type="password" autocomplete="off" required></label>
-        <div class="wide"><button class="primary" type="submit">Anslut session</button><span id="sessionMessage" class="form-message"></span></div>
+        <label class="wide">Befintlig session-token<input name="token" type="password" autocomplete="off" required></label>
+        <div class="wide"><button class="primary" type="submit">Importera token</button><span id="sessionMessage" class="form-message"></span></div>
       </form>
-    </article>
+    </details>
     <details id="loginPanel" class="profile-spacing">
       <summary>Alternativ: logga in med konto</summary>
       <form id="loginForm" class="form-grid">

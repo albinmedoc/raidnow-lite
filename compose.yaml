@@ -4,10 +4,18 @@ services:
     # Use `build: .` instead while developing locally.
     restart: unless-stopped
     ports:
-      - "4173:4173"
+      - "${PORT:-4173}:${PORT:-4173}"
     environment:
-      RAIDNOW_MODE: demo
-      # RAIDNOW_LIVE_WRITES: "false"
+      HOST: "${HOST:-0.0.0.0}"
+      PORT: "${PORT:-4173}"
+      RAIDNOW_MODE: "${RAIDNOW_MODE:-demo}"
+      RAIDNOW_LIVE_WRITES: "${RAIDNOW_LIVE_WRITES:-false}"
+      PUBLIC_ORIGIN: "${PUBLIC_ORIGIN:-}"
+      RAIDNOW_COOKIE_SECURE: "${RAIDNOW_COOKIE_SECURE:-false}"
+      VAPID_PUBLIC_KEY: "${VAPID_PUBLIC_KEY:-}"
+      VAPID_PRIVATE_KEY: "${VAPID_PRIVATE_KEY:-}"
+      VAPID_SUBJECT: "${VAPID_SUBJECT:-}"
+      PUSH_ALLOWED_HOSTS: "${PUSH_ALLOWED_HOSTS:-}"
       # RAIDNOW_POLL_INTERVAL_MS: "15000"
     volumes:
       - raidnow-data:/app/data

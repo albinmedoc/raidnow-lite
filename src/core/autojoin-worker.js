@@ -1,331 +1,292 @@
 import { EventEmitter } from 'node:events';
+import { initialSnapshot, migrateSnapshot, reduceAutoJoin } from './autojoin-state-machine.js';
 
-const ACTIVE_STATES = new Set(['starting', 'searching', 'retrying']);
+const defaultClock = {
+  now: () => Date.now(),
+  setTimeout: (callback, delay) => globalThis.setTimeout(callback, delay),
+  clearTimeout: (handle) => globalThis.clearTimeout(handle)
+};
+
+function clone(value) {
+  return structuredClone(value);
+}
+
+function message(error) {
+  return error?.message || String(error);
+}
+
+function runDirect(operation, { signal } = {}) {
+  if (signal?.aborted) return Promise.reject(signal.reason ?? new Error('Operation aborted.'));
+  return Promise.resolve().then(operation);
+}
+
+export class AutoJoinUnavailableError extends Error {
+  constructor(message) {
+    super(message);
+    this.status = 501;
+    this.code = 'AUTOJOIN_UNAVAILABLE';
+  }
+}
 
 export class AutoJoinWorker extends EventEmitter {
   #adapter;
+  #persist;
+  #clock;
+  #runOperation;
   #pollIntervalMs;
+  #scanIntervalMs;
+  #snapshot = initialSnapshot();
+  #mailbox = Promise.resolve();
   #timer = null;
-  #generation = 0;
-  #fastAttempts = new Map();
-  #nextQueuePollAt = 0;
-  #state = {
-    state: 'idle',
-    startedAt: null,
-    lastContactAt: null,
-    nextPollAt: null,
-    error: null,
-    profile: null,
-    selection: null,
-    raid: null
-  };
+  #activeOperation = null;
+  #running = true;
+  #leavePromise = null;
+  #recoverPromise = null;
+  #waiters = new Set();
 
-  constructor({ adapter, pollIntervalMs = 15_000 }) {
+  constructor({ adapter, pollIntervalMs = 15_000, scanIntervalMs = 1_000, persist = async () => {}, clock = defaultClock, runOperation = runDirect }) {
     super();
     this.#adapter = adapter;
+    this.#persist = persist;
+    this.#clock = clock;
+    this.#runOperation = runOperation;
     this.#pollIntervalMs = pollIntervalMs;
+    this.#scanIntervalMs = scanIntervalMs;
   }
 
   status() {
-    return structuredClone(this.#state);
-  }
+    const snapshot = this.#snapshot;
+    const matched = snapshot.raid.state === 'matched' || snapshot.raid.state === 'leaving' ||
+      (snapshot.raid.state === 'unknown' && snapshot.raid.value && snapshot.intent === 'leave');
+    let state = snapshot.terminal.target ?? 'idle';
+    if (matched) state = 'matched';
+    else if (snapshot.intent === 'stop' && snapshot.raid.state === 'unknown') state = 'stopping';
+    else if (snapshot.operation?.kind === 'joinRaid') state = 'joining';
+    else if (snapshot.intent === 'search') {
+      if (snapshot.operation?.kind === 'createQueue') state = 'starting';
+      else state = snapshot.retryCount > 0 || snapshot.lastError ? 'retrying' : 'searching';
+    } else if (snapshot.queue.state !== 'none' || snapshot.wake?.kind === 'reconcileQueue') state = 'reconciling';
 
-  restore(saved) {
-    if (saved?.state !== 'matched' || !saved.raid?.rpl_id) return false;
-    this.#state = {
-      ...this.#state,
-      ...structuredClone(saved),
-      state: 'matched',
-      nextPollAt: null,
-      error: null
+    const queueCancelPending = snapshot.queue.state !== 'none' &&
+      (snapshot.intent === 'stop' || snapshot.intent === 'leave' || matched || snapshot.terminal.target === 'error');
+    const nextAt = snapshot.wake?.dueAt ?? null;
+    return {
+      state,
+      startedAt: snapshot.startedAt,
+      lastContactAt: snapshot.lastContactAt,
+      nextPollAt: snapshot.wake && !snapshot.wake.kind.startsWith('reconcile') ? nextAt : null,
+      error: snapshot.terminal.error ?? (['retrying', 'reconciling', 'stopping'].includes(state) ? snapshot.lastError : null),
+      profile: matched ? null : clone(snapshot.search?.profile ?? null),
+      selection: clone(snapshot.search?.selection ?? null),
+      raid: clone(snapshot.raid.value ?? null),
+      queueCancelPending,
+      retryCount: Number(snapshot.retryCount || 0),
+      lastError: snapshot.lastError,
+      nextRetryAt: snapshot.wake?.kind.startsWith('reconcile') ? nextAt : null
     };
-    return true;
   }
 
-  async start({ profile, selection }) {
-    if (ACTIVE_STATES.has(this.#state.state)) throw new Error('An Auto Join search is already active.');
-    this.#clearTimer();
-    const generation = ++this.#generation;
-    this.#setState({ state: 'starting', startedAt: new Date().toISOString(), profile, selection, raid: null, error: null });
-
-    if (selection?.strategy === 'fast') {
-      if ((!this.#adapter.listRaidsForSelection && !this.#adapter.listRaids) || !this.#adapter.joinRaidFast) throw new Error('Fast raid search is unavailable.');
-      this.#fastAttempts.clear();
-      this.#setState({ state: 'searching', lastContactAt: new Date().toISOString() });
-      await this.#pollFast(generation);
-      return this.status();
-    }
-
-    const response = await this.#adapter.createMatching({ profile, selection });
-    if (response?.status !== 'success') {
-      const message = response?.text || 'Raid NOW rejected the Auto Join request.';
-      this.#setState({ state: 'error', error: message, nextPollAt: null });
-      throw new Error(message);
-    }
-
-    this.#setState({ state: 'searching', lastContactAt: new Date().toISOString() });
-    if (selection?.strategy === 'hybrid') {
-      if ((!this.#adapter.listRaidsForSelection && !this.#adapter.listRaids) || !this.#adapter.joinRaidFast) throw new Error('Hybrid raid search is unavailable.');
-      this.#fastAttempts.clear();
-      this.#nextQueuePollAt = Date.now() + this.#pollIntervalMs;
-      await this.#pollHybrid(generation);
-      return this.status();
-    }
-    this.#schedulePoll(generation);
-    return this.status();
+  start({ profile, selection }) {
+    this.#assertCapabilities(selection);
+    return this.#dispatch({ type: 'start', profile, selection }).then(() => this.status());
   }
 
-  async recover({ profile, selection }) {
-    if (ACTIVE_STATES.has(this.#state.state)) return true;
-    if (selection?.strategy === 'fast') {
-      this.#clearTimer();
-      const generation = ++this.#generation;
-      this.#setState({
-        state: 'searching',
-        startedAt: new Date().toISOString(),
-        lastContactAt: null,
-        profile,
-        selection,
-        raid: null,
-        error: null
-      });
-      this.#schedulePoll(generation, 0);
-      return true;
-    }
-    if (selection?.strategy === 'hybrid') {
-      let response = await this.#adapter.checkMatching({ profile, selection });
-      if (!response?.id) {
-        response = await this.#adapter.createMatching({ profile, selection });
-        if (response?.status !== 'success') return false;
-      }
-      this.#clearTimer();
-      const generation = ++this.#generation;
-      this.#fastAttempts.clear();
-      this.#nextQueuePollAt = Date.now() + this.#pollIntervalMs;
-      this.#setState({
-        state: 'searching',
-        startedAt: new Date().toISOString(),
-        lastContactAt: new Date().toISOString(),
-        profile,
-        selection,
-        raid: null,
-        error: null
-      });
-      this.#schedulePoll(generation, 0);
-      return true;
-    }
-    const response = await this.#adapter.checkMatching({ profile, selection });
-    if (!response?.id) return false;
-
-    this.#clearTimer();
-    const generation = ++this.#generation;
-    this.#setState({
-      state: 'searching',
-      startedAt: new Date().toISOString(),
-      lastContactAt: new Date().toISOString(),
-      profile,
-      selection,
-      raid: null,
-      error: null
+  recover(context) {
+    this.#assertCapabilities(context.selection);
+    if (this.#recoverPromise) return this.#recoverPromise;
+    const recovery = this.#dispatch({ type: 'recover', ...context }).then(() => true);
+    const tracked = recovery.finally(() => {
+      if (this.#recoverPromise === tracked) this.#recoverPromise = null;
     });
-    this.#schedulePoll(generation);
+    this.#recoverPromise = tracked;
+    return tracked;
+  }
+
+  async restore(saved) {
+    if (!saved) return false;
+    const restored = migrateSnapshot(saved, this.#config());
+    await this.#enqueue(async () => {
+      if (!this.#running) this.#running = true;
+      await this.#persist(clone(restored));
+      this.#snapshot = restored;
+      this.emit('state', this.status());
+      this.#resumeDurableWork();
+    });
     return true;
   }
 
-  async stop() {
-    const wasActive = ACTIVE_STATES.has(this.#state.state);
-    ++this.#generation;
-    this.#clearTimer();
-    if (wasActive && this.#state.selection?.strategy !== 'fast' && this.#adapter.cancelMatching) await this.#adapter.cancelMatching();
-    this.#setState({ state: 'stopped', nextPollAt: null, profile: null, selection: null });
-    return this.status();
+  stop() {
+    return this.#dispatch({ type: 'stop' }).then(() => this.status());
+  }
+
+  leaveRaid() {
+    if (this.#leavePromise) return this.#leavePromise;
+    const leaving = this.#dispatch({ type: 'leave' })
+      .then(() => this.#waitUntil((status) => status.state === 'idle' || (this.#snapshot.intent !== 'leave' && Boolean(this.#snapshot.terminal.error))))
+      .then((status) => {
+        if (status.error) throw new Error(status.error);
+        return status;
+      });
+    const tracked = leaving.finally(() => {
+      if (this.#leavePromise === tracked) this.#leavePromise = null;
+    });
+    this.#leavePromise = tracked;
+    return tracked;
   }
 
   shutdown() {
-    ++this.#generation;
-    this.#clearTimer();
+    this.#running = false;
+    if (this.#timer !== null) this.#clock.clearTimeout(this.#timer);
+    this.#timer = null;
+    const error = new Error('Auto Join worker shut down.');
+    this.#activeOperation?.controller.abort(error);
+    this.#activeOperation = null;
+    for (const waiter of [...this.#waiters]) waiter.reject(error);
   }
 
-  async leaveRaid() {
-    const id = this.#state.raid?.rpl_id;
-    if (this.#state.state !== 'matched' || !id) throw new Error('There is no active raid to leave.');
-    if (!this.#adapter.leaveRaid) throw new Error('Leaving a raid is unavailable.');
-    const response = await this.#adapter.leaveRaid(id);
-    if (response?.status && response.status !== 'success') throw new Error(response.text || 'Raid NOW rejected the leave request.');
-    this.#setState({
-      state: 'idle',
-      startedAt: null,
-      lastContactAt: new Date().toISOString(),
-      nextPollAt: null,
-      error: null,
-      profile: null,
-      selection: null,
-      raid: null
-    });
+  #config() {
+    return {
+      now: new Date(this.#clock.now()).toISOString(),
+      pollIntervalMs: this.#pollIntervalMs,
+      scanIntervalMs: this.#scanIntervalMs
+    };
+  }
+
+  #dispatch(event) {
+    if (!this.#running) return Promise.reject(new Error('Auto Join worker is shut down.'));
+    return this.#enqueue(() => this.#process(event));
+  }
+
+  #enqueue(task) {
+    const result = this.#mailbox.then(task);
+    this.#mailbox = result.catch(() => {});
+    return result;
+  }
+
+  async #process(event) {
+    const transition = reduceAutoJoin(this.#snapshot, event, this.#config());
+    const rejection = transition.effects.find((effect) => effect.type === 'reject');
+    if (rejection) throw new Error(rejection.error);
+    await this.#persist(clone(transition.snapshot));
+    this.#snapshot = transition.snapshot;
+    this.emit('state', this.status());
+    for (const effect of transition.effects) {
+      if (effect.type === 'matched') this.emit('matched', clone(effect.raid));
+      else if (effect.type === 'adapter') this.#launchAdapter(effect.opId);
+      else if (effect.type === 'timer') this.#armTimer(effect);
+      else if (effect.type === 'abort' && this.#activeOperation?.opId === effect.opId) {
+        this.#activeOperation.controller.abort(new Error('Auto Join worker stopped.'));
+      }
+    }
     return this.status();
   }
 
-  #schedulePoll(generation, delay = this.#pollIntervalMs) {
-    if (generation !== this.#generation || !ACTIVE_STATES.has(this.#state.state)) return;
-    const nextPollAt = new Date(Date.now() + delay).toISOString();
-    this.#setState({ nextPollAt });
-    this.#timer = setTimeout(() => this.#poll(generation), delay);
+  #resumeDurableWork() {
+    if (!this.#running) return;
+    if (this.#snapshot.operation) this.#launchAdapter(this.#snapshot.operation.opId);
+    else if (this.#snapshot.wake) this.#armTimer(this.#snapshot.wake);
   }
 
-  async #poll(generation) {
-    if (generation !== this.#generation || !ACTIVE_STATES.has(this.#state.state)) return;
-    this.#timer = null;
-    if (this.#state.selection?.strategy === 'fast') return this.#pollFast(generation);
-    if (this.#state.selection?.strategy === 'hybrid') return this.#pollHybrid(generation);
-    try {
-      const response = await this.#adapter.pollMatching({
-        profile: this.#state.profile,
-        selection: this.#state.selection
-      });
-      if (generation !== this.#generation) return;
-      this.#setState({ state: 'searching', lastContactAt: new Date().toISOString(), error: null });
-
-      if (response?.status === 'success' && Number(response.rpllm_status) === 2 && response.rpllm_rpl_id) {
-        const raid = this.#adapter.findRaid
-          ? await this.#adapter.findRaid(response.rpllm_rpl_id)
-          : { rpl_id: response.rpllm_rpl_id, rpl_pokemon: response.pokemon };
-        return this.#finishMatch(raid, false);
-      }
-      this.#schedulePoll(generation);
-    } catch (error) {
-      if (generation !== this.#generation) return;
-      this.#setState({ state: 'retrying', error: error.message || String(error) });
-      this.#schedulePoll(generation, Math.min(this.#pollIntervalMs * 2, 60_000));
-    }
+  #armTimer({ kind, dueAt }) {
+    if (!this.#running) return;
+    if (this.#timer !== null) this.#clock.clearTimeout(this.#timer);
+    const delay = Math.max(0, Date.parse(dueAt) - this.#clock.now());
+    this.#timer = this.#clock.setTimeout(() => {
+      this.#timer = null;
+      this.#dispatch({ type: 'wake', kind }).catch((error) => this.emit('workerError', error));
+    }, delay);
   }
 
-  async #pollFast(generation) {
-    if (generation !== this.#generation || !ACTIVE_STATES.has(this.#state.state)) return;
-    this.#timer = null;
-    try {
-      const raid = await this.#scanFastLobby(generation);
-      if (generation !== this.#generation) return;
-      this.#setState({ state: 'searching', lastContactAt: new Date().toISOString(), error: null });
-      if (raid) return this.#finishMatch(raid, false);
-      this.#schedulePoll(generation, Math.min(this.#pollIntervalMs, 1_000));
-    } catch (error) {
-      if (generation !== this.#generation) return;
-      this.#setState({ state: 'retrying', error: error.message || String(error) });
-      this.#schedulePoll(generation, Math.min(Math.max(this.#pollIntervalMs, 1_000), 5_000));
-    }
-  }
-
-  async #pollHybrid(generation) {
-    if (generation !== this.#generation || !ACTIVE_STATES.has(this.#state.state)) return;
-    this.#timer = null;
-    let lastError = null;
-
-    try {
-      const directRaid = await this.#scanFastLobby(generation);
-      if (generation !== this.#generation) return;
-      if (directRaid) return this.#finishMatch(directRaid, true);
-    } catch (error) {
-      lastError = error;
-    }
-
-    if (Date.now() >= this.#nextQueuePollAt) {
-      this.#nextQueuePollAt = Date.now() + this.#pollIntervalMs;
-      try {
-        const response = await this.#adapter.pollMatching({
-          profile: this.#state.profile,
-          selection: this.#state.selection
+  #launchAdapter(opId) {
+    if (!this.#running || this.#activeOperation || this.#snapshot.operation?.opId !== opId) return;
+    const operation = clone(this.#snapshot.operation);
+    const controller = new AbortController();
+    this.#activeOperation = { opId, controller };
+    this.#runOperation(() => this.#executeAdapter(operation, controller.signal), { signal: controller.signal })
+      .then((value) => {
+        if (!this.#running) return;
+        return this.#dispatch({ type: 'operationSucceeded', opId, value });
+      })
+      .catch((error) => {
+        if (!this.#running) return;
+        return this.#dispatch({
+          type: 'operationRejected',
+          opId,
+          error: message(error),
+          definite: !['createQueue', 'cancelQueue', 'joinRaid', 'leaveRaid'].includes(operation.kind)
         });
-        if (generation !== this.#generation) return;
-        if (response?.status === 'success' && Number(response.rpllm_status) === 2 && response.rpllm_rpl_id) {
-          const raid = this.#adapter.findRaid
-            ? await this.#adapter.findRaid(response.rpllm_rpl_id)
-            : { rpl_id: response.rpllm_rpl_id, rpl_pokemon: response.pokemon };
-          return this.#finishMatch(raid, false);
+      })
+      .catch((error) => this.emit('workerError', error))
+      .finally(() => {
+        if (this.#activeOperation?.controller === controller) this.#activeOperation = null;
+        if (this.#running && this.#snapshot.operation && this.#snapshot.operation.opId !== opId) {
+          this.#launchAdapter(this.#snapshot.operation.opId);
         }
-      } catch (error) {
-        lastError = error;
-      }
-    }
-
-    this.#setState({
-      state: lastError ? 'retrying' : 'searching',
-      lastContactAt: new Date().toISOString(),
-      error: lastError ? lastError.message || String(lastError) : null
-    });
-    this.#schedulePoll(generation, Math.min(this.#pollIntervalMs, 1_000));
+      });
   }
 
-  async #scanFastLobby(generation) {
-    const selection = this.#state.selection ?? {};
-    const selectedPokemon = new Set((selection.pokemon ?? []).map(String));
-    const selectedRanks = new Set((selection.ranks ?? []).map(String));
-    const raids = this.#adapter.listRaidsForSelection
-      ? await this.#adapter.listRaidsForSelection(selection)
-      : await this.#adapter.listRaids({ page: 1, rank: 0 });
-    if (generation !== this.#generation) return null;
-
-    const now = Date.now();
-    for (const [id, attemptedAt] of this.#fastAttempts) {
-      if (now - attemptedAt > 10_000) this.#fastAttempts.delete(id);
-    }
-
-    const candidates = raids.filter((raid) =>
-      raid?.rpl_id &&
-      selectedPokemon.has(String(raid.rpl_pokemon)) &&
-      selectedRanks.has(String(raid.rpl_rank)) &&
-      Number(raid.rpl_deleted || 0) === 0 &&
-      Number(raid.my || 0) !== 1 &&
-      (!Number(selection.hostLevel || 0) || Number(raid.rpl_level || 0) >= Number(selection.hostLevel)) &&
-      (Number(selection.weatherBoost || 0) !== 1 || Number(raid.rpl_weather || 0) === 1) &&
-      (Number(selection.weatherBoost || 0) !== 2 || Number(raid.rpl_weather || 0) !== 1)
-    );
-
-    for (const raid of candidates) {
-      if (Number(raid.join || 0) === 1) return raid;
-      if (Number(raid.rpl_glevel || 0) > Number(this.#state.profile?.level || 0)) continue;
-      if (this.#fastAttempts.has(String(raid.rpl_id))) continue;
-      this.#fastAttempts.set(String(raid.rpl_id), now);
-      const response = await this.#adapter.joinRaidFast(raid.rpl_id, this.#state.profile);
-      if (generation !== this.#generation) return null;
-      if (response?.status === 'success') return response.data || raid;
-    }
-    return null;
-  }
-
-  async #finishMatch(raid, cancelQueue) {
-    let cancellationError = null;
-    if (cancelQueue && this.#adapter.cancelMatching) {
-      for (let attempt = 0; attempt < 3; attempt += 1) {
-        try {
-          const response = await this.#adapter.cancelMatching();
-          if (!response?.status || response.status === 'success') {
-            cancellationError = null;
-            break;
-          }
-          cancellationError = new Error(response.text || 'Could not cancel the Auto Join queue.');
-        } catch (error) {
-          cancellationError = error;
+  async #executeAdapter(operation, signal) {
+    const input = operation.input ?? {};
+    switch (operation.kind) {
+      case 'createQueue':
+        return this.#adapter.createMatching({ profile: input.profile, selection: input.selection }, { signal });
+      case 'pollQueue': {
+        const response = await this.#adapter.pollMatching({ profile: input.profile, selection: input.selection }, { signal });
+        if (Number(response?.rpllm_status) === 2 && response?.rpllm_rpl_id && this.#adapter.findRaid) {
+          const raid = await this.#adapter.findRaid(response.rpllm_rpl_id, { signal });
+          return { ...response, raid };
         }
-        if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 200));
+        return response;
       }
+      case 'scanLobbies':
+        return this.#adapter.listRaidsForSelection
+          ? this.#adapter.listRaidsForSelection(input.selection, { signal })
+          : this.#adapter.listRaids({ page: 1, rank: 0 }, { signal });
+      case 'joinRaid':
+        return this.#adapter.joinRaidFast(input.raidId, input.profile, { signal });
+      case 'cancelQueue':
+        return this.#adapter.cancelMatching({ signal });
+      case 'checkQueue':
+        return this.#adapter.checkMatching({ profile: input.profile, selection: input.selection }, { signal });
+      case 'leaveRaid':
+        return this.#adapter.leaveRaid(input.raidId, { signal });
+      case 'verifyMembership':
+        if (!this.#adapter.findRaid) throw new Error('Raid reconciliation requires adapter.findRaid().');
+        if (!input.raidId) throw new Error('Raid reconciliation requires a target raid ID.');
+        return this.#adapter.findRaid(input.raidId, { signal });
+      default:
+        throw new Error(`Unknown Auto Join operation: ${operation.kind}`);
     }
-    this.#setState({
-      state: 'matched',
-      raid,
-      profile: null,
-      nextPollAt: null,
-      error: cancellationError ? `Raiden hittades, men kön kunde inte avbrytas: ${cancellationError.message || cancellationError}` : null
+  }
+
+  #waitUntil(predicate) {
+    if (!this.#running) return Promise.reject(new Error('Auto Join worker is shut down.'));
+    const current = this.status();
+    if (predicate(current)) return Promise.resolve(current);
+    return new Promise((resolve, reject) => {
+      const waiter = {
+        reject: (error) => {
+          this.off('state', listener);
+          this.#waiters.delete(waiter);
+          reject(error);
+        }
+      };
+      const listener = (status) => {
+        if (!predicate(status)) return;
+        this.off('state', listener);
+        this.#waiters.delete(waiter);
+        resolve(status);
+      };
+      this.#waiters.add(waiter);
+      this.on('state', listener);
     });
-    this.emit('matched', raid);
   }
 
-  #setState(patch) {
-    Object.assign(this.#state, patch);
-    this.emit('state', this.status());
-  }
-
-  #clearTimer() {
-    if (this.#timer) clearTimeout(this.#timer);
-    this.#timer = null;
+  #assertCapabilities(selection) {
+    if (selection?.strategy !== 'fast' && selection?.strategy !== 'hybrid') return;
+    if ((!this.#adapter.listRaidsForSelection && !this.#adapter.listRaids) || !this.#adapter.joinRaidFast) {
+      const label = selection.strategy === 'fast' ? 'Fast' : 'Hybrid';
+      throw new AutoJoinUnavailableError(`${label} raid search is unavailable.`);
+    }
   }
 }

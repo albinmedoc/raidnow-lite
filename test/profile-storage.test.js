@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { loadLocalProfile, saveLocalProfile } from '../public/profile-storage.js';
+import { clearLocalProfile, loadLocalProfile, saveLocalProfile } from '../public/profile-storage.js';
 
 function storageStub(initial = {}) {
   const values = new Map(Object.entries(initial));
   return {
     getItem(key) { return values.has(key) ? values.get(key) : null; },
     setItem(key, value) { values.set(key, String(value)); },
+    removeItem(key) { values.delete(key); },
     dump(key) { return values.get(key); }
   };
 }
@@ -29,4 +30,11 @@ test('invalid browser storage does not break startup', () => {
 test('ignores profiles stored before the multi-user reset', () => {
   const storage = storageStub({ raidnow_profile: JSON.stringify({ trainerName: 'OldUser' }) });
   assert.deepEqual(loadLocalProfile(storage), {});
+});
+
+test('clears only the current versioned trainer profile', () => {
+  const storage = storageStub({ raidnow_profile_v2: '{}', raidnow_profile: 'legacy' });
+  clearLocalProfile(storage);
+  assert.equal(storage.dump('raidnow_profile_v2'), undefined);
+  assert.equal(storage.dump('raidnow_profile'), 'legacy');
 });

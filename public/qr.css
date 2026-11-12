@@ -1,0 +1,50 @@
+.qr-modal {
+  width: min(430px, calc(100% - 24px));
+  text-align: center;
+}
+
+.qr-dialog-card {
+  display: grid;
+  justify-items: center;
+  gap: 16px;
+}
+
+.qr-dialog-card .modal-header {
+  width: 100%;
+  text-align: left;
+}
+
+.qr-dialog-card p {
+  margin: 0;
+}
+
+.trainer-code-qr {
+  display: block;
+  width: min(100%, 320px);
+  height: auto;
+  padding: 12px;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.qr-fallback {
+  font-size: 20px;
+}
+
+.qr-dialog-card > .primary {
+  width: 100%;
+}
+
+@media (max-width: 520px) {
+  .active-raid-heading .actions {
+    width: 100%;
+  }
+
+  .active-raid-heading .actions button {
+    flex: 1 1 auto;
+  }
+
+  .trainer-code-qr {
+    width: min(100%, 280px);
+  }
+}

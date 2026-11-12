@@ -1,6 +1,6 @@
 {
   "name": "raidnow-lite",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,5 +9,11 @@
   },
   "engines": {
     "node": ">=22"
+  },
+  "devDependencies": {
+    "jsqr": "1.4.0"
+  },
+  "dependencies": {
+    "web-push": "3.6.7"
   }
 }

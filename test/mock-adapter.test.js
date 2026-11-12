@@ -21,3 +21,14 @@ test('mock adapter supports deterministic fast joining', async () => {
   assert.equal(response.data.rpl_id, raid.rpl_id);
   assert.equal(response.data.join, 1);
 });
+
+test('mock adapter leaves a matched demo raid without upstream writes', async () => {
+  const adapter = new MockRaidNowAdapter({ matchAfterPolls: 1 });
+  const raid = (await adapter.listRaids())[0];
+  await adapter.createMatching({ selection: { ranks: [raid.rpl_rank], pokemon: [raid.rpl_pokemon] } });
+  const match = await adapter.pollMatching();
+
+  assert.equal((await adapter.findRaid(match.rpllm_rpl_id)).join, 1);
+  assert.deepEqual(await adapter.leaveRaid(match.rpllm_rpl_id), { status: 'success' });
+  assert.equal((await adapter.findRaid(match.rpllm_rpl_id)).join, 0);
+});

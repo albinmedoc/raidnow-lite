@@ -12,3 +12,7 @@ export function saveLocalProfile(storage = localStorage, profile) {
   storage.setItem(PROFILE_KEY, JSON.stringify(profile));
   return profile;
 }
+
+export function clearLocalProfile(storage = localStorage) {
+  storage.removeItem(PROFILE_KEY);
+}

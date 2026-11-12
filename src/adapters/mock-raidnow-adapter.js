@@ -39,6 +39,7 @@ export class MockRaidNowAdapter {
     this.#polls += 1;
     if (this.#polls < this.#matchAfterPolls) return { status: 'success', rpllm_status: 1, list: [] };
     const raid = this.#matchingRaid();
+    raid.join = 1;
     this.#active = false;
     return { status: 'success', rpllm_status: 2, rpllm_rpl_id: raid.rpl_id, pokemon: raid.rpl_pokemon, list: [] };
   }
@@ -54,6 +55,13 @@ export class MockRaidNowAdapter {
 
   async findRaid(id) {
     return structuredClone(this.#raids.find((raid) => String(raid.rpl_id) === String(id)) ?? null);
+  }
+
+  async leaveRaid(id) {
+    const raid = this.#raids.find((item) => String(item.rpl_id) === String(id));
+    if (!raid || raid.join !== 1) return { status: 'error', text: 'Raid membership not found.' };
+    raid.join = 0;
+    return { status: 'success' };
   }
 
   #matchingRaid() {

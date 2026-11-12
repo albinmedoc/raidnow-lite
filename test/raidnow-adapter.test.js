@@ -33,6 +33,110 @@ test('serializes Auto Join create like the original jQuery client', async () => 
   assert.equal(calls[0].options.headers.referer, 'https://raidnow.leekduck.com/');
 });
 
+test('times out a hung Auto Join create with an abort signal', async () => {
+  let receivedSignal = null;
+  const fetchImpl = async (_url, options) => {
+    receivedSignal = options.signal;
+    return new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+    });
+  };
+  const adapter = new RaidNowAdapter({
+    fetchImpl,
+    allowWrites: true,
+    operationTimeouts: { line_matching_create: 5 }
+  });
+
+  await assert.rejects(
+    () => adapter.createMatching({ profile, selection }),
+    /Auto Join create timed out/i
+  );
+  assert.equal(receivedSignal.aborted, true);
+});
+
+test('times out while reading a response body that ignores abort', async () => {
+  let receivedSignal = null;
+  const fetchImpl = async (_url, options) => {
+    receivedSignal = options.signal;
+    return {
+      ok: true,
+      status: 200,
+      text() { return new Promise(() => {}); }
+    };
+  };
+  const adapter = new RaidNowAdapter({
+    fetchImpl,
+    allowWrites: true,
+    operationTimeouts: { line_matching_create: 5 }
+  });
+
+  await assert.rejects(
+    () => adapter.createMatching({ profile, selection }),
+    /Auto Join create timed out/i
+  );
+  assert.equal(receivedSignal.aborted, true);
+});
+
+test('aborts an Auto Join create when its caller cancels the operation', async () => {
+  const controller = new AbortController();
+  let receivedSignal = null;
+  const fetchImpl = async (_url, options) => {
+    receivedSignal = options.signal;
+    return new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+    });
+  };
+  const adapter = new RaidNowAdapter({ fetchImpl, allowWrites: true });
+  const pending = adapter.createMatching({ profile, selection }, { signal: controller.signal });
+  controller.abort(new Error('worker stopped'));
+
+  await assert.rejects(() => pending, /worker stopped/i);
+  assert.equal(receivedSignal.aborted, true);
+});
+
+test('caller cancellation is not relabeled as a later timeout when the body ignores abort', async () => {
+  const controller = new AbortController();
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    text() { return new Promise(() => {}); }
+  });
+  const adapter = new RaidNowAdapter({
+    fetchImpl,
+    allowWrites: true,
+    operationTimeouts: { line_matching_create: 10 }
+  });
+  const pending = adapter.createMatching({ profile, selection }, { signal: controller.signal });
+  controller.abort(new Error('worker stopped'));
+
+  await assert.rejects(() => pending, /worker stopped/i);
+  await new Promise((resolve) => setTimeout(resolve, 15));
+});
+
+test('uses the raid-list timeout and label for a hung list request', async () => {
+  const fetchImpl = async (_url, options) => new Promise((_resolve, reject) => {
+    options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+  });
+  const adapter = new RaidNowAdapter({
+    fetchImpl,
+    operationTimeouts: { par_list: 5 }
+  });
+
+  await assert.rejects(() => adapter.listRaids(), /Raid list timed out/i);
+});
+
+test('forwards caller cancellation to an Auto Join poll', async () => {
+  const controller = new AbortController();
+  const fetchImpl = async (_url, options) => new Promise((_resolve, reject) => {
+    options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+  });
+  const adapter = new RaidNowAdapter({ fetchImpl });
+  const pending = adapter.pollMatching({ selection }, { signal: controller.signal });
+  controller.abort(new Error('poll cancelled'));
+
+  await assert.rejects(() => pending, /poll cancelled/i);
+});
+
 test('posts the trainer profile using the upstream user_info_post contract', async () => {
   const calls = [];
   const adapter = new RaidNowAdapter({ fetchImpl: fakeFetch([{}], calls), allowWrites: true });
@@ -68,9 +172,12 @@ test('logs in through raidnow.leekduck.com and retains the returned token', asyn
   assert.equal(calls[1].body.get('token'), 'account-token');
 });
 
-test('surfaces upstream session errors while listing raids', async () => {
+test('surfaces upstream session errors while listing raids as recoverable authentication failures', async () => {
   const adapter = new RaidNowAdapter({ fetchImpl: fakeFetch([{ status: 'error', text: 'The session has expired. Please restart.' }], []) });
-  await assert.rejects(() => adapter.listRaids(), /session has expired/i);
+  await assert.rejects(
+    () => adapter.listRaids(),
+    (error) => error.status === 401 && /session has expired/i.test(error.message)
+  );
 });
 
 test('blocks mutating upstream operations unless live writes are enabled', async () => {
@@ -160,6 +267,63 @@ test('loads boss display names and images from Raid NOW metadata', async () => {
   }]);
   assert.equal(calls[1].url, 'https://raidnow.leekduck.com/');
   assert.equal(calls[1].options.method, 'GET');
+});
+
+test('times out the Raid NOW metadata fetch with its own abort signal', async () => {
+  let metadataSignal = null;
+  const fetchImpl = async (_url, options) => {
+    if (options.method === 'POST') {
+      return {
+        ok: true,
+        status: 200,
+        async text() { return JSON.stringify({ list: [{ rank: '5', pokemon: 'Giratina' }] }); }
+      };
+    }
+    metadataSignal = options.signal;
+    return new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+    });
+  };
+  const adapter = new RaidNowAdapter({
+    fetchImpl,
+    operationTimeouts: { pokemon_metadata: 5 }
+  });
+
+  const bosses = await adapter.listCurrentRaidBosses();
+  assert.equal(bosses[0].displayName, 'Giratina');
+  assert.equal(metadataSignal.aborted, true);
+});
+
+test('propagates caller cancellation from the Raid NOW metadata fetch', async () => {
+  const controller = new AbortController();
+  let metadataStarted;
+  let postCompleted;
+  const started = new Promise((resolve) => { metadataStarted = resolve; });
+  const completed = new Promise((resolve) => { postCompleted = resolve; });
+  const fetchImpl = async (_url, options) => {
+    if (options.method === 'POST') {
+      return {
+        ok: true,
+        status: 200,
+        async text() {
+          postCompleted();
+          return JSON.stringify({ list: [{ rank: '5', pokemon: 'Giratina' }] });
+        }
+      };
+    }
+    metadataStarted();
+    return new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+    });
+  };
+  const adapter = new RaidNowAdapter({ fetchImpl });
+  const pending = adapter.listCurrentRaidBosses({ signal: controller.signal });
+  await Promise.all([started, completed]);
+  await new Promise((resolve) => setImmediate(resolve));
+  const reason = new Error('boss list cancelled');
+  controller.abort(reason);
+
+  await assert.rejects(pending, (error) => error === reason);
 });
 
 test('fast joins a specific lobby using the original child_post_fast contract', async () => {

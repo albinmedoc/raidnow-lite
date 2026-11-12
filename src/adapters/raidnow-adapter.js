@@ -1,5 +1,35 @@
 const DEFAULT_URL = 'https://pokemongo-get.com/wp-content/themes/simplicity2-child/include/gofriend_enraid_masta.php?v=2025121601';
 const RAIDNOW_PAGE_URL = 'https://raidnow.leekduck.com/';
+const DEFAULT_OPERATION_TIMEOUTS = {
+  login: 15_000,
+  user_info_post: 15_000,
+  par_list: 10_000,
+  line_matching_get_list: 10_000,
+  child_post_fast: 15_000,
+  line_matching_create: 15_000,
+  line_matching_list: 10_000,
+  line_matching_check: 10_000,
+  line_matching_cancel: 15_000,
+  par_find_first: 10_000,
+  child_list: 10_000,
+  guest_raid_del_post: 15_000,
+  pokemon_metadata: 10_000
+};
+const OPERATION_LABELS = {
+  login: 'Login',
+  user_info_post: 'Profile update',
+  par_list: 'Raid list',
+  line_matching_get_list: 'Auto Join boss list',
+  child_post_fast: 'Fast raid join',
+  line_matching_create: 'Auto Join create',
+  line_matching_list: 'Auto Join poll',
+  line_matching_check: 'Auto Join check',
+  line_matching_cancel: 'Auto Join cancel',
+  par_find_first: 'Raid lookup',
+  child_list: 'Raid player list',
+  guest_raid_del_post: 'Raid leave',
+  pokemon_metadata: 'Pokémon metadata'
+};
 
 function parseAssignedJson(source, variableName) {
   const assignment = new RegExp(`\\bvar\\s+${variableName}\\s*=`).exec(source);
@@ -32,40 +62,49 @@ function appendValue(body, key, value) {
   }
 }
 
+function upstreamResponseError(response, fallback) {
+  const message = response?.text || fallback;
+  const error = new Error(message);
+  if (/session has expired|please log in|login required/i.test(message)) error.status = 401;
+  return error;
+}
+
 export class RaidNowAdapter {
   #fetch;
   #url;
   #allowWrites;
   #token;
   #csrfToken;
+  #operationTimeouts;
   #lastContext = null;
   #currentBosses = [];
   #currentBossesAt = 0;
   #pokemonMetadata = null;
   #pokemonMetadataAt = 0;
 
-  constructor({ fetchImpl = fetch, url = DEFAULT_URL, allowWrites = false, token = '', csrfToken = '' } = {}) {
+  constructor({ fetchImpl = fetch, url = DEFAULT_URL, allowWrites = false, token = '', csrfToken = '', operationTimeouts = {} } = {}) {
     this.#fetch = fetchImpl;
     this.#url = url;
     this.#allowWrites = allowWrites;
     this.#token = token;
     this.#csrfToken = csrfToken;
+    this.#operationTimeouts = { ...DEFAULT_OPERATION_TIMEOUTS, ...operationTimeouts };
   }
 
   setToken(token = '') { this.#token = token; }
   hasToken() { return Boolean(this.#token); }
 
-  async login({ email, password }) {
+  async login({ email, password }, { signal } = {}) {
     const response = await this.#post('login', {
       input_email: email,
       input_password1: password,
       token: this.#token
-    }, { url: 'https://raidnow.leekduck.com/' });
+    }, { url: 'https://raidnow.leekduck.com/', signal });
     if (response?.status === 'success' && response.token) this.#token = response.token;
     return response;
   }
 
-  async updateProfile(profile) {
+  async updateProfile(profile, { signal } = {}) {
     this.#assertWritable();
     return this.#post('user_info_post', {
       input_tid: profile.trainerName,
@@ -73,10 +112,10 @@ export class RaidNowAdapter {
       input_code: profile.trainerCode,
       input_country_code: profile.countryCode,
       token: this.#token
-    }, { allowEmpty: true });
+    }, { allowEmpty: true, signal });
   }
 
-  async listRaids({ page = 1, filter = [], rank = 0, hostLevel = 0, hostEvaluate = [] } = {}) {
+  async listRaids({ page = 1, filter = [], rank = 0, hostLevel = 0, hostEvaluate = [] } = {}, { signal } = {}) {
     const response = await this.#post('par_list', {
       possible: false,
       filter,
@@ -89,17 +128,17 @@ export class RaidNowAdapter {
       token: this.#token,
       hostlevel: hostLevel,
       hostevaluate: hostEvaluate
-    });
-    if (response?.status === 'error') throw new Error(response.text || 'Raid NOW rejected the raid list request.');
+    }, { signal });
+    if (response?.status === 'error') throw upstreamResponseError(response, 'Raid NOW rejected the raid list request.');
     return Array.isArray(response) ? response : response?.list ?? [];
   }
 
-  async listCurrentRaidBosses() {
+  async listCurrentRaidBosses({ signal } = {}) {
     const [response, metadata] = await Promise.all([
-      this.#post('line_matching_get_list', { token: this.#token }),
-      this.#listPokemonMetadata()
+      this.#post('line_matching_get_list', { token: this.#token }, { signal }),
+      this.#listPokemonMetadata({ signal })
     ]);
-    if (response?.status === 'error') throw new Error(response.text || 'Raid NOW rejected the Auto Join list request.');
+    if (response?.status === 'error') throw upstreamResponseError(response, 'Raid NOW rejected the Auto Join list request.');
     const list = Array.isArray(response?.list) ? response.list : [];
     const bosses = list
       .filter((entry) => entry?.rank && entry?.pokemon && entry.pokemon !== 'egg')
@@ -118,9 +157,9 @@ export class RaidNowAdapter {
     return bosses;
   }
 
-  async listRaidsForSelection(selection = {}) {
+  async listRaidsForSelection(selection = {}, { signal } = {}) {
     if (!this.#currentBosses.length || Date.now() - this.#currentBossesAt > 60_000) {
-      await this.listCurrentRaidBosses();
+      await this.listCurrentRaidBosses({ signal });
     }
     const selected = new Set((selection.pokemon ?? []).map(String));
     const filter = [...new Set(this.#currentBosses.map((boss) => boss.pokemon).filter((pokemon) => !selected.has(pokemon)))];
@@ -130,10 +169,10 @@ export class RaidNowAdapter {
       rank: ranks.length === 1 ? ranks[0] : 0,
       filter,
       hostLevel: Number(selection.hostLevel || 0)
-    });
+    }, { signal });
   }
 
-  async joinRaidFast(raidId, profile) {
+  async joinRaidFast(raidId, profile, { signal } = {}) {
     this.#assertWritable();
     return this.#post('child_post_fast', {
       parid: raidId,
@@ -146,10 +185,10 @@ export class RaidNowAdapter {
       country_code: profile.countryCode,
       regional_raid: 0,
       token: this.#token
-    });
+    }, { signal });
   }
 
-  async createMatching({ profile, selection }) {
+  async createMatching({ profile, selection }, { signal } = {}) {
     this.#assertWritable();
     this.#lastContext = { profile, selection };
     return this.#post('line_matching_create', {
@@ -170,30 +209,30 @@ export class RaidNowAdapter {
       token: this.#token,
       hosteval: selection.hostEvaluate ?? [-1, 0, 1, 2],
       hosttl: selection.hostLevel ?? 0
-    });
+    }, { signal });
   }
 
-  async pollMatching({ selection } = {}) {
+  async pollMatching({ selection } = {}, { signal } = {}) {
     const actual = selection ?? this.#lastContext?.selection ?? {};
     return this.#post('line_matching_list', {
       rank: actual.ranks ?? [],
       pokemon: actual.pokemon ?? [],
       guestevalstar: actual.guestScore ?? '',
       token: this.#token
-    });
+    }, { signal });
   }
 
-  async checkMatching({ selection } = {}) {
+  async checkMatching({ selection } = {}, { signal } = {}) {
     const actual = selection ?? this.#lastContext?.selection ?? {};
-    return this.#post('line_matching_check', { pokemon: actual.pokemon ?? [], token: this.#token });
+    return this.#post('line_matching_check', { pokemon: actual.pokemon ?? [], token: this.#token }, { signal });
   }
 
-  async cancelMatching() {
+  async cancelMatching({ signal } = {}) {
     this.#assertWritable();
-    return this.#post('line_matching_cancel', { lang: '1', token: this.#token });
+    return this.#post('line_matching_cancel', { lang: '1', token: this.#token }, { signal });
   }
 
-  async findRaid(id) {
+  async findRaid(id, { signal } = {}) {
     const response = await this.#post('par_find_first', {
       possible: false,
       filter: [],
@@ -202,17 +241,17 @@ export class RaidNowAdapter {
       token: this.#token,
       hostlevel: 0,
       hostevaluate: []
-    });
+    }, { signal });
     if (Array.isArray(response)) return response.find((raid) => String(raid.rpl_id) === String(id)) ?? null;
     return response?.list?.find((raid) => String(raid.rpl_id) === String(id)) ?? null;
   }
 
-  async listRaidPlayers(id) {
+  async listRaidPlayers(id, { signal } = {}) {
     const response = await this.#post('child_list', {
       parid: id,
       lang: '1',
       token: this.#token
-    });
+    }, { signal });
     if (response?.status === 'error') throw new Error(response.text || 'Raid NOW rejected the player list request.');
     const players = (response?.list ?? []).map((player) => ({
       id: player.rplc_id,
@@ -230,16 +269,16 @@ export class RaidNowAdapter {
     };
   }
 
-  async leaveRaid(id) {
+  async leaveRaid(id, { signal } = {}) {
     this.#assertWritable();
     return this.#post('guest_raid_del_post', {
       edit: id,
       lang: '1',
       token: this.#token
-    });
+    }, { signal });
   }
 
-  async #post(type, fields, { allowEmpty = false, url = this.#url } = {}) {
+  async #post(type, fields, { allowEmpty = false, url = this.#url, signal } = {}) {
     const body = new URLSearchParams();
     body.append('type', type);
     for (const [key, value] of Object.entries(fields)) appendValue(body, key, value);
@@ -251,36 +290,70 @@ export class RaidNowAdapter {
       'user-agent': 'Mozilla/5.0 RaidNowLite/0.1'
     };
     if (this.#csrfToken) headers['x-csrf-token'] = this.#csrfToken;
-    const response = await this.#fetch(url, { method: 'POST', headers, body });
-    if (!response.ok) throw new Error(`Raid NOW returned HTTP ${response.status}.`);
-    const text = await response.text();
-    if (!text.trim()) {
-      if (allowEmpty) return {};
-      throw new Error('Raid NOW returned an empty response.');
-    }
+    return this.#withDeadline(type, signal, async (operationSignal) => {
+      const response = await this.#fetch(url, { method: 'POST', headers, body, signal: operationSignal });
+      if (!response.ok) throw new Error(`Raid NOW returned HTTP ${response.status}.`);
+      const text = await response.text();
+      if (!text.trim()) {
+        if (allowEmpty) return {};
+        throw new Error('Raid NOW returned an empty response.');
+      }
+      try {
+        return JSON.parse(text);
+      } catch {
+        throw new Error('Raid NOW returned an invalid JSON response.');
+      }
+    });
+  }
+
+  async #listPokemonMetadata({ signal } = {}) {
+    if (this.#pokemonMetadata && Date.now() - this.#pokemonMetadataAt < 60 * 60_000) return this.#pokemonMetadata;
     try {
-      return JSON.parse(text);
-    } catch {
-      throw new Error('Raid NOW returned an invalid JSON response.');
+      return await this.#withDeadline('pokemon_metadata', signal, async (operationSignal) => {
+        const response = await this.#fetch(RAIDNOW_PAGE_URL, {
+          method: 'GET',
+          headers: {
+            accept: 'text/html',
+            'user-agent': 'Mozilla/5.0 RaidNowLite/0.1'
+          },
+          signal: operationSignal
+        });
+        if (!response.ok) throw new Error(`Raid NOW returned HTTP ${response.status}.`);
+        this.#pokemonMetadata = parseAssignedJson(await response.text(), 'aryPokemon');
+        this.#pokemonMetadataAt = Date.now();
+        return this.#pokemonMetadata;
+      });
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason ?? error;
+      return {};
     }
   }
 
-  async #listPokemonMetadata() {
-    if (this.#pokemonMetadata && Date.now() - this.#pokemonMetadataAt < 60 * 60_000) return this.#pokemonMetadata;
+  async #withDeadline(type, signal, operation) {
+    const controller = new AbortController();
+    const operationSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+    const timeoutError = new Error(`${OPERATION_LABELS[type]} timed out.`);
+    let timeout;
+    let abortListener;
+    const races = [Promise.resolve().then(() => operation(operationSignal))];
+    races.push(new Promise((_resolve, reject) => {
+      timeout = setTimeout(() => {
+        reject(timeoutError);
+        controller.abort(timeoutError);
+      }, this.#operationTimeouts[type]);
+    }));
+    if (signal) {
+      races.push(new Promise((_resolve, reject) => {
+        abortListener = () => reject(signal.reason);
+        if (signal.aborted) abortListener();
+        else signal.addEventListener('abort', abortListener, { once: true });
+      }));
+    }
     try {
-      const response = await this.#fetch(RAIDNOW_PAGE_URL, {
-        method: 'GET',
-        headers: {
-          accept: 'text/html',
-          'user-agent': 'Mozilla/5.0 RaidNowLite/0.1'
-        }
-      });
-      if (!response.ok) throw new Error(`Raid NOW returned HTTP ${response.status}.`);
-      this.#pokemonMetadata = parseAssignedJson(await response.text(), 'aryPokemon');
-      this.#pokemonMetadataAt = Date.now();
-      return this.#pokemonMetadata;
-    } catch {
-      return {};
+      return await Promise.race(races);
+    } finally {
+      clearTimeout(timeout);
+      if (abortListener) signal.removeEventListener('abort', abortListener);
     }
   }
 

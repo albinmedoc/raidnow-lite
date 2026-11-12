@@ -1,0 +1,15 @@
+{
+  "name": "Raid NOW Lite",
+  "short_name": "Raid NOW",
+  "description": "Privat raid-sökning som fortsätter i bakgrunden.",
+  "lang": "sv",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "theme_color": "#08090a",
+  "background_color": "#08090a",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
