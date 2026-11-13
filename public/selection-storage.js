@@ -58,6 +58,14 @@ export function catalogForWorkerView(catalog = [], selectedIds = new Set(), { ac
   return filterBossCatalog(catalog, rank, text);
 }
 
+export function popularBosses(catalog = [], limit = 5) {
+  return catalog
+    .map((boss, index) => ({ boss, index }))
+    .sort((left, right) => Number(right.boss.waitingCount || 0) - Number(left.boss.waitingCount || 0) || left.index - right.index)
+    .slice(0, Math.max(0, limit))
+    .map(({ boss }) => boss);
+}
+
 export function reconcileSelection(catalog = [], localSelection = null, serverSelection = null) {
   if (serverSelection && Array.isArray(serverSelection.ranks) && Array.isArray(serverSelection.pokemon)) {
     const ranks = new Set(serverSelection.ranks.map(String));

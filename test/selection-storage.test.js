@@ -8,6 +8,7 @@ import {
   isWorkerLocked,
   loadLocalSelection,
   nextStaleWarningCount,
+  popularBosses,
   reconcileSelection,
   saveLocalSelection
 } from '../public/selection-storage.js';
@@ -89,6 +90,18 @@ test('active worker view shows selected catalog bosses regardless of saved filte
     catalogForWorkerView(catalog, selectedIds, { active: false, rank: '3', text: 'pika' }).map((boss) => boss.id),
     ['3\u0000ピカチュウ']
   );
+});
+
+test('selects the five most popular bosses by Auto Join waiting count with stable tie ordering', () => {
+  const bosses = [
+    { id: 'a', displayName: 'A', waitingCount: 2 },
+    { id: 'b', displayName: 'B', waitingCount: 12 },
+    { id: 'c', displayName: 'C', waitingCount: 0 },
+    { id: 'd', displayName: 'D', waitingCount: 7 },
+    { id: 'e', displayName: 'E', waitingCount: 12 },
+    { id: 'f', displayName: 'F', waitingCount: 4 }
+  ];
+  assert.deepEqual(popularBosses(bosses, 5).map((boss) => boss.id), ['b', 'e', 'd', 'f', 'a']);
 });
 
 test('stale selection warning survives rerenders until selection or catalog changes', () => {

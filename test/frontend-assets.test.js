@@ -50,7 +50,7 @@ test('PWA manifest and HTML expose installable Swedish metadata and local icons'
 
 test('service worker caches only an explicit shell and bypasses APIs, SSE, mutations, and external images', async () => {
   const source = await asset('service-worker.js');
-  assert.match(source, /raidnow-shell-v2/);
+  assert.match(source, /raidnow-shell-v3/);
   assert.match(source, /const SHELL_ASSETS = \[/);
   assert.match(source, /request\.method !== 'GET'/);
   assert.match(source, /url\.origin !== self\.location\.origin/);
@@ -85,6 +85,22 @@ test('browser UI exposes local boss search, trainer identity, and safe reset con
   assert.match(html, /id="resetBrowser"/);
   assert.match(html, /Återställ denna webbläsare/);
   assert.match(html, /id="activeSelection"/);
+  assert.match(html, /Populärast just nu/);
+  assert.match(html, /id="popularRaidGrid"/);
+});
+
+test('boss cards are compact, omit Japanese labels, and use a local Dynamax icon', async () => {
+  const [source, css, icon] = await Promise.all([
+    asset('app.js'),
+    asset('styles.css'),
+    asset('icons/dynamax.svg')
+  ]);
+  assert.match(source, /popularBosses\(state\.catalog, 5\)/);
+  assert.match(source, /waitingCount/);
+  assert.match(source, /\/icons\/dynamax\.svg/);
+  assert.doesNotMatch(source, /description\.textContent = \(boss\.pokemon/);
+  assert.match(css, /grid-template-columns:repeat\(auto-fill,minmax\(150px,1fr\)\)/);
+  assert.match(icon, /<svg/);
 });
 
 test('browser app loads the full catalog and owns selection/reset lifecycle locally', async () => {

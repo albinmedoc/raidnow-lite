@@ -149,7 +149,8 @@ export class RaidNowAdapter {
           rank: String(entry.rank),
           pokemon,
           displayName: String(details.en || pokemon),
-          image: String(details.image || '')
+          image: String(details.image || ''),
+          waitingCount: Math.max(0, Number.parseInt(entry.offpokemon, 10) || 0)
         };
       });
     this.#currentBosses = bosses;

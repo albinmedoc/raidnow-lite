@@ -1,4 +1,4 @@
-const CACHE_NAME = 'raidnow-shell-v2';
+const CACHE_NAME = 'raidnow-shell-v3';
 const SHELL_ASSETS = [
   '/',
   '/index.html',
@@ -13,7 +13,8 @@ const SHELL_ASSETS = [
   '/manifest.webmanifest',
   '/icons/icon-192.png',
   '/icons/icon-512.png',
-  '/icons/apple-touch-icon.png'
+  '/icons/apple-touch-icon.png',
+  '/icons/dynamax.svg'
 ];
 
 self.addEventListener('install', (event) => {

@@ -7,6 +7,7 @@ import {
   isWorkerLocked,
   loadLocalSelection,
   nextStaleWarningCount,
+  popularBosses,
   reconcileSelection,
   saveLocalSelection
 } from './selection-storage.js';
@@ -160,53 +161,73 @@ function visibleBosses() {
   });
 }
 
-function renderRaids() {
-  const grid = $('#raidGrid');
+function createBossCard(boss, { popular = false } = {}) {
   const locked = isWorkerLocked(state.autoJoin?.state) || state.autoJoin?.state === 'matched';
-  const bosses = visibleBosses();
+  const key = boss.id;
+  const card = document.createElement('article');
+  card.className = `raid-card boss-card${popular ? ' popular-card' : ''}${state.selected.has(key) ? ' selected' : ''}`;
+  card.tabIndex = locked ? -1 : 0;
+  card.setAttribute('role', 'checkbox');
+  card.setAttribute('aria-checked', String(state.selected.has(key)));
+  card.setAttribute('aria-disabled', String(locked));
+  const top = document.createElement('div'); top.className = 'raid-top';
+  if (['10', '11'].includes(String(boss.rank))) {
+    const icon = document.createElement('img');
+    icon.className = 'dynamax-icon'; icon.src = '/icons/dynamax.svg'; icon.alt = ''; icon.title = rankLabel(boss.rank);
+    top.setAttribute('aria-label', rankLabel(boss.rank));
+    top.append(icon);
+  } else {
+    const tier = document.createElement('span'); tier.className = 'tier'; tier.textContent = rankLabel(boss.rank);
+    top.append(tier);
+  }
+  card.append(top);
+  if (boss.image) {
+    const image = document.createElement('img');
+    image.className = 'boss-image'; image.src = boss.image; image.alt = ''; image.loading = 'lazy';
+    card.append(image);
+  }
+  const title = document.createElement('h3'); title.textContent = boss.displayName || 'Okänd boss';
+  const meta = document.createElement('div'); meta.className = 'meta queue-count';
+  const count = Math.max(0, Number(boss.waitingCount || 0));
+  meta.setAttribute('aria-label', `${count} ${count === 1 ? 'person' : 'personer'} i kö`);
+  const person = document.createElement('span'); person.className = 'queue-person'; person.setAttribute('aria-hidden', 'true');
+  const number = document.createElement('span'); number.textContent = String(count);
+  meta.append(person, number);
+  const mark = document.createElement('span'); mark.className = 'select-mark'; mark.textContent = state.selected.has(key) ? '✓' : '+';
+  card.append(title, meta, mark);
+  const toggle = () => {
+    if (isWorkerLocked(state.autoJoin?.state) || state.autoJoin?.state === 'matched') return;
+    state.selected.has(key) ? state.selected.delete(key) : state.selected.set(key, boss);
+    state.staleWarningCount = nextStaleWarningCount(state.staleWarningCount, null, { dismiss: true });
+    persistSelection();
+    renderRaids(); renderSelection();
+  };
+  card.addEventListener('click', toggle);
+  card.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggle(); }
+  });
+  return card;
+}
+
+function renderBossGrid(grid, bosses, emptyText, options = {}) {
   grid.replaceChildren();
   if (!bosses.length) {
     const empty = document.createElement('p');
-    empty.className = 'muted';
-    empty.textContent = state.catalog.length ? 'Inga raidbossar matchar filtret.' : 'Inga raidbossar hittades.';
+    empty.className = 'muted'; empty.textContent = emptyText;
     grid.append(empty);
     return;
   }
-  for (const boss of bosses) {
-    const key = boss.id;
-    const card = document.createElement('article');
-    card.className = `raid-card boss-card${state.selected.has(key) ? ' selected' : ''}`;
-    card.tabIndex = locked ? -1 : 0;
-    card.setAttribute('role', 'checkbox');
-    card.setAttribute('aria-checked', String(state.selected.has(key)));
-    card.setAttribute('aria-disabled', String(locked));
-    const top = document.createElement('div'); top.className = 'raid-top';
-    const tier = document.createElement('span'); tier.className = 'tier'; tier.textContent = rankLabel(boss.rank);
-    top.append(tier);
-    if (boss.image) {
-      const image = document.createElement('img');
-      image.className = 'boss-image'; image.src = boss.image; image.alt = ''; image.loading = 'lazy';
-      card.append(top, image);
-    } else card.append(top);
-    const title = document.createElement('h3'); title.textContent = boss.displayName || 'Okänd boss';
-    const meta = document.createElement('div'); meta.className = 'meta';
-    const description = document.createElement('span'); description.textContent = (boss.pokemon || []).join(', ');
-    meta.append(description);
-    const mark = document.createElement('span'); mark.className = 'select-mark'; mark.textContent = state.selected.has(key) ? '✓' : '+';
-    card.append(title, meta, mark);
-    const toggle = () => {
-      if (isWorkerLocked(state.autoJoin?.state) || state.autoJoin?.state === 'matched') return;
-      state.selected.has(key) ? state.selected.delete(key) : state.selected.set(key, boss);
-      state.staleWarningCount = nextStaleWarningCount(state.staleWarningCount, null, { dismiss: true });
-      persistSelection();
-      renderRaids(); renderSelection();
-    };
-    card.addEventListener('click', toggle);
-    card.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggle(); }
-    });
-    grid.append(card);
-  }
+  for (const boss of bosses) grid.append(createBossCard(boss, options));
+}
+
+function renderRaids() {
+  renderBossGrid($('#popularRaidGrid'), popularBosses(state.catalog, 5), 'Ingen ködata tillgänglig ännu.', { popular: true });
+  const bosses = visibleBosses();
+  renderBossGrid(
+    $('#raidGrid'),
+    bosses,
+    state.catalog.length ? 'Inga raidbossar matchar filtret.' : 'Inga raidbossar hittades.'
+  );
 }
 
 async function loadRaids({ dismissStaleWarning = false } = {}) {

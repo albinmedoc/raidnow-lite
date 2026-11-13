@@ -46,7 +46,8 @@ export function buildRaidBossCatalog(currentBosses = []) {
       rank,
       pokemon: [pokemon],
       displayName: readableName(current.displayName || pokemon),
-      image: current.image || ''
+      image: current.image || '',
+      waitingCount: Math.max(0, Number.parseInt(current.waitingCount, 10) || 0)
     });
   }
   return [...bosses.values()].sort((a, b) => Number(b.rank) - Number(a.rank) || a.displayName.localeCompare(b.displayName));

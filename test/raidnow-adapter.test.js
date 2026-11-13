@@ -228,9 +228,9 @@ test('loads every selectable boss from the original Auto Join list', async () =>
   const adapter = new RaidNowAdapter({ fetchImpl, token: 'anonymous-token' });
   const bosses = await adapter.listCurrentRaidBosses();
   assert.deepEqual(bosses, [
-    { rank: '1', pokemon: 'ピカチュウ', displayName: 'ピカチュウ', image: '' },
-    { rank: '5', pokemon: 'ギラティナ', displayName: 'ギラティナ', image: '' },
-    { rank: '5', pokemon: 'ザシアン(けんのおう)', displayName: 'ザシアン(けんのおう)', image: '' }
+    { rank: '1', pokemon: 'ピカチュウ', displayName: 'ピカチュウ', image: '', waitingCount: 0 },
+    { rank: '5', pokemon: 'ギラティナ', displayName: 'ギラティナ', image: '', waitingCount: 5 },
+    { rank: '5', pokemon: 'ザシアン(けんのおう)', displayName: 'ザシアン(けんのおう)', image: '', waitingCount: 14 }
   ]);
   assert.equal(calls[0].body.get('type'), 'line_matching_get_list');
   assert.equal(calls[0].body.get('token'), 'anonymous-token');
@@ -245,7 +245,7 @@ test('loads boss display names and images from Raid NOW metadata', async () => {
         ok: true,
         status: 200,
         async text() {
-          return JSON.stringify({ list: [{ rank: '11', pokemon: 'キョダイマックスリザードン' }] });
+          return JSON.stringify({ list: [{ rank: '11', pokemon: 'キョダイマックスリザードン', offpokemon: '7' }] });
         }
       };
     }
@@ -263,7 +263,8 @@ test('loads boss display names and images from Raid NOW metadata', async () => {
     rank: '11',
     pokemon: 'キョダイマックスリザードン',
     displayName: 'Gigantamax Charizard',
-    image: 'https://example.test/charizard.png'
+    image: 'https://example.test/charizard.png',
+    waitingCount: 7
   }]);
   assert.equal(calls[1].url, 'https://raidnow.leekduck.com/');
   assert.equal(calls[1].options.method, 'GET');
