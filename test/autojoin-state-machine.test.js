@@ -126,6 +126,29 @@ test('restore resumes in-flight membership verification as raid reconciliation',
   assert.equal(restored.wake.kind, 'reconcileRaid');
 });
 
+test('restore canonicalizes durable filters before resumed upstream work', () => {
+  const saved = {
+    ...initialSnapshot(),
+    intent: 'search',
+    search: {
+      profile,
+      selection: {
+        strategy: 'fast', ranks: ['5'], pokemon: ['Giratina'], hostRating: false, hostCountry: [1],
+        weatherBoost: true, hostLevel: ['70'], hostEvaluate: Array.from({ length: 10_000 }, (_, index) => index)
+      },
+      nextQueuePollAt: null,
+      attemptedRaids: {}
+    },
+    queue: { state: 'present' },
+    wake: { kind: 'scan', dueAt: now }
+  };
+  const restored = migrateSnapshot(saved, { now, pollIntervalMs: 15_000 });
+  assert.deepEqual(restored.search.selection, {
+    strategy: 'hybrid', ranks: ['5'], pokemon: ['Giratina'], hostRating: 3, hostCountry: 0,
+    weatherBoost: 0, hostLevel: 0, hostEvaluate: [-1, 0, 1, 2], guest6: 0
+  });
+});
+
 test('schema v1 migration preserves matched raid and pending queue cancellation', () => {
   const migrated = migrateSnapshot({
     state: 'matched',
@@ -151,6 +174,21 @@ test('schema v1 active states migrate conservatively', () => {
     assert.equal(migrated.queue.state, 'unknown', state);
     assert.equal(migrated.wake.kind, 'reconcileQueue', state);
   }
+});
+
+test('schema v1 restore defaults malformed filter scalar types', () => {
+  const migrated = migrateSnapshot({
+    state: 'searching',
+    profile,
+    selection: {
+      ranks: ['5'], pokemon: ['Giratina'], hostRating: {}, hostCountry: [1],
+      weatherBoost: false, hostLevel: ['70'], hostEvaluate: Array.from({ length: 10_000 }, (_, index) => index)
+    }
+  }, { now, pollIntervalMs: 15_000 });
+  assert.deepEqual(migrated.search.selection, {
+    strategy: 'hybrid', ranks: ['5'], pokemon: ['Giratina'], hostRating: 3, hostCountry: 0,
+    weatherBoost: 0, hostLevel: 0, hostEvaluate: [-1, 0, 1, 2], guest6: 0
+  });
 });
 
 test('raid reconciliation verifies membership and adopts a joined raid', () => {
@@ -288,6 +326,29 @@ test('attempted direct raid candidates expire after ten seconds', () => {
   const retried = reduce(scanning, { type: 'operationSucceeded', opId: 'scan-1', value: [candidate] }).snapshot;
   assert.equal(retried.operation.kind, 'joinRaid');
   assert.equal(retried.operation.input.raidId, 'raid-1');
+});
+
+test('direct scanning respects the different-country filter', () => {
+  const scanning = {
+    ...initialSnapshot(), intent: 'search',
+    search: {
+      profile: { ...profile, countryCode: 'se' },
+      selection: { ...selection, strategy: 'fast', hostCountry: 1 },
+      nextQueuePollAt: null,
+      attemptedRaids: {}
+    },
+    operation: { opId: 'scan-country', kind: 'scanLobbies', input: {}, startedAt: now, attempt: 1 }
+  };
+  const result = reduce(scanning, {
+    type: 'operationSucceeded',
+    opId: 'scan-country',
+    value: [
+      { rpl_id: 'same', rpl_rank: '5', rpl_pokemon: 'Giratina', rpl_country_code: 'se' },
+      { rpl_id: 'different', rpl_rank: '5', rpl_pokemon: 'Giratina', rpl_country_code: 'us' }
+    ]
+  }).snapshot;
+  assert.equal(result.operation.kind, 'joinRaid');
+  assert.equal(result.operation.input.raidId, 'different');
 });
 
 test('definite join rejection removes the candidate attempt immediately', () => {

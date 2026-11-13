@@ -29,6 +29,10 @@ test('serializes Auto Join create like the original jQuery client', async () => 
   assert.equal(body.get('tid'), 'Albin123');
   assert.equal(body.get('level'), '50');
   assert.equal(body.get('country_code'), 'se');
+  assert.equal(body.get('host_country'), '0');
+  assert.equal(body.get('weather_boost'), '0');
+  assert.deepEqual(body.getAll('hosteval[]'), [-1, 0, 1, 2].map(String));
+  assert.equal(body.get('hosttl'), '0');
   assert.equal(calls[0].options.headers.origin, 'https://raidnow.leekduck.com');
   assert.equal(calls[0].options.headers.referer, 'https://raidnow.leekduck.com/');
 });
@@ -355,10 +359,14 @@ test('filters the live lobby page down to the selected fast-search bosses', asyn
       [{ rpl_id: 'raid-1', rpl_rank: '5', rpl_pokemon: 'ギラティナ' }]
     ], calls)
   });
-  const raids = await adapter.listRaidsForSelection({ ranks: ['5'], pokemon: ['ギラティナ'] });
+  const raids = await adapter.listRaidsForSelection({
+    ranks: ['5'], pokemon: ['ギラティナ'], hostLevel: 50, hostEvaluate: [-1, 0, 1, 2]
+  });
   assert.equal(raids[0].rpl_id, 'raid-1');
   assert.equal(calls[0].body.get('type'), 'line_matching_get_list');
   assert.equal(calls[1].body.get('type'), 'par_list');
   assert.deepEqual(calls[1].body.getAll('filter[]').sort(), ['ザシアン(けんのおう)', 'ダイマックスレジスチル'].sort());
   assert.equal(calls[1].body.get('searchrank'), '5');
+  assert.equal(calls[1].body.get('hostlevel'), '50');
+  assert.deepEqual(calls[1].body.getAll('hostevaluate[]'), [-1, 0, 1, 2].map(String));
 });

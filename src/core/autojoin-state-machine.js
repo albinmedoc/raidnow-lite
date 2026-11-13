@@ -1,3 +1,5 @@
+import { normalizeRestoredSearchSelection } from './search-selection.js';
+
 const WRITE_KINDS = new Set(['createQueue', 'cancelQueue', 'joinRaid', 'leaveRaid']);
 
 export function initialSnapshot() {
@@ -84,6 +86,10 @@ function selectedRaid(snapshot, raids, now) {
     Number(raid.rpl_deleted || 0) === 0 &&
     Number(raid.my || 0) !== 1 &&
     (!Number(selection.hostLevel || 0) || Number(raid.rpl_level || 0) >= Number(selection.hostLevel)) &&
+    (Number(selection.hostCountry || 0) !== 1 || (
+      String(raid.rpl_country_code || '').trim() &&
+      String(raid.rpl_country_code).toLowerCase() !== String(profile.countryCode || '').toLowerCase()
+    )) &&
     (Number(selection.weatherBoost || 0) !== 1 || Number(raid.rpl_weather || 0) === 1) &&
     (Number(selection.weatherBoost || 0) !== 2 || Number(raid.rpl_weather || 0) !== 1) &&
     (Number(raid.join || 0) === 1 || Number(raid.rpl_glevel || 0) <= Number(profile.level || 0)) &&
@@ -385,6 +391,7 @@ export function migrateSnapshot(saved, config) {
   if (!saved) return initialSnapshot();
   if (saved.schemaVersion === 2) {
     let next = { ...initialSnapshot(), ...clone(saved) };
+    if (next.search?.selection) next.search.selection = normalizeRestoredSearchSelection(next.search.selection);
     const op = next.operation;
     next.operation = null;
     if (op?.kind === 'createQueue' || op?.kind === 'cancelQueue') {
@@ -411,7 +418,7 @@ export function migrateSnapshot(saved, config) {
   const next = initialSnapshot();
   next.startedAt = saved.startedAt ?? null;
   next.lastContactAt = saved.lastContactAt ?? null;
-  next.search = saved.selection ? { profile: clone(saved.profile), selection: clone(saved.selection), nextQueuePollAt: null, attemptedRaids: {} } : null;
+  next.search = saved.selection ? { profile: clone(saved.profile), selection: normalizeRestoredSearchSelection(saved.selection), nextQueuePollAt: null, attemptedRaids: {} } : null;
   next.retryCount = Number(saved.retryCount || 0);
   next.lastError = saved.lastError ?? saved.error ?? null;
   next.terminal = { target: saved.state === 'matched' ? 'matched' : saved.state === 'error' ? 'error' : saved.state === 'stopped' ? 'stopped' : 'idle', error: saved.error ?? saved.lastError ?? null };

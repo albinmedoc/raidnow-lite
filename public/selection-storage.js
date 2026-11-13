@@ -16,7 +16,9 @@ function normalizeSelection(value) {
   return {
     version: VERSION,
     bossIds: [...new Set(value.bossIds)],
-    hostLevel: normalizeInteger(value.hostLevel, (number) => number >= 0 && number <= 80),
+    hostLevel: normalizeInteger(value.hostLevel, (number) => [0, 40, 50, 60, 70].includes(number)),
+    hostRating: normalizeInteger(value.hostRating, (number) => number >= -1 && number <= 5, 3),
+    hostCountry: normalizeInteger(value.hostCountry, (number) => [0, 1].includes(number)),
     weatherBoost: normalizeInteger(value.weatherBoost, (number) => [0, 1, 2].includes(number)),
     rankFilter: typeof value.rankFilter === 'string' ? value.rankFilter : '0',
     textFilter: typeof value.textFilter === 'string' ? value.textFilter.slice(0, 100) : ''

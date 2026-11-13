@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AutoJoinWorker } from './core/autojoin-worker.js';
+import { normalizeSearchSelection } from './core/search-selection.js';
 import { normalizeProfile, validateProfile } from './core/validation.js';
 import { buildRaidBossCatalog, enrichRaids, groupRaidBosses } from './core/raid-catalog.js';
 import { canonicalizePushSubscription, MAX_PUSH_SUBSCRIPTIONS, pushSubscriptionId } from './core/web-push.js';
@@ -62,10 +63,11 @@ async function readJson(request, maxBodyBytes) {
   }
 }
 
-export function createApp({ adapter, store, sessionManager = null, pushNotifier = null, pollIntervalMs = 15_000, publicDir, mode = 'demo', liveWrites = false, logger = console, maxBodyBytes = DEFAULT_MAX_BODY_BYTES, mutationLimit = DEFAULT_MUTATION_LIMIT, mutationWindowMs = DEFAULT_MUTATION_WINDOW_MS, sseHeartbeatMs = DEFAULT_SSE_HEARTBEAT_MS, now = Date.now }) {
+export function createApp({ adapter, store, sessionManager = null, pushNotifier = null, pollIntervalMs = 15_000, scanIntervalMs = 1_000, publicDir, mode = 'demo', liveWrites = false, logger = console, maxBodyBytes = DEFAULT_MAX_BODY_BYTES, mutationLimit = DEFAULT_MUTATION_LIMIT, mutationWindowMs = DEFAULT_MUTATION_WINDOW_MS, sseHeartbeatMs = DEFAULT_SSE_HEARTBEAT_MS, now = Date.now }) {
   const defaultWorker = sessionManager ? null : new AutoJoinWorker({
     adapter,
     pollIntervalMs,
+    scanIntervalMs,
     persist: (snapshot) => store.update({ autoJoin: snapshot })
   });
   const defaultClients = new Set();
@@ -240,16 +242,13 @@ export function createApp({ adapter, store, sessionManager = null, pushNotifier 
       if (request.method === 'POST' && url.pathname === '/api/autojoin/start') {
         if (restoreLocked) return sendJson(response, 409, { message: restoreFailure.error });
         if (!['idle', 'stopped', 'error'].includes(worker.status().state)) return sendJson(response, 409, { message: 'An Auto Join search is already active.' });
-        const selection = await readJson(request, maxBodyBytes);
+        const input = await readJson(request, maxBodyBytes);
         const profile = sessionManager
-          ? normalizeProfile(selection.profile ?? {})
+          ? normalizeProfile(input.profile ?? {})
           : activeStore.get().profile ?? {};
-        delete selection.profile;
         const errors = validateProfile(profile);
         if (Object.keys(errors).length) return sendJson(response, 400, { message: 'Complete your profile first.', errors });
-        if (!Array.isArray(selection.ranks) || !selection.ranks.length || !Array.isArray(selection.pokemon) || !selection.pokemon.length) {
-          return sendJson(response, 400, { message: 'Select at least one raid tier and one boss.' });
-        }
+        const selection = normalizeSearchSelection(input);
         const status = await worker.start({ profile, selection });
         return sendJson(response, 200, status);
       }

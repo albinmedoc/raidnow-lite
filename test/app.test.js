@@ -9,7 +9,7 @@ async function startTestApp(adapter, options = {}) {
     get() { return structuredClone(state); },
     async update(patch) { state = { ...state, ...patch }; return this.get(); }
   };
-  const app = createApp({ adapter, store, pollIntervalMs: 5, publicDir: new URL('../public/', import.meta.url), ...options });
+  const app = createApp({ adapter, store, pollIntervalMs: 5, scanIntervalMs: 1, publicDir: new URL('../public/', import.meta.url), ...options });
   await app.ready;
   await new Promise((resolve) => app.server.listen(0, '127.0.0.1', resolve));
   const address = app.server.address();
@@ -157,10 +157,35 @@ test('returns upstream session failures from the catalog route as 401 recovery e
   } finally { await close(app); }
 });
 
+test('rejects unsupported search filter values before starting a durable worker', async () => {
+  let createCalls = 0;
+  const adapter = {
+    async createMatching() { createCalls += 1; return { status: 'success' }; },
+    async cancelMatching() { return { status: 'success' }; },
+    async checkMatching() { return { status: 'success', id: '' }; }
+  };
+  const app = await startTestApp(adapter);
+  try {
+    await fetch(`${app.baseUrl}/api/profile`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ trainerName: 'Albin123', trainerCode: '123456789012', level: 50, countryCode: 'se' })
+    });
+    const response = await fetch(`${app.baseUrl}/api/autojoin/start`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ranks: ['5'], pokemon: ['Giratina'], hostLevel: 5 })
+    });
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).message, /host level/i);
+    assert.equal(createCalls, 0);
+  } finally { await close(app); }
+});
+
 test('starts server-owned Auto Join and reaches matched state', async () => {
   let polls = 0;
   const adapter = {
     async listRaids() { return [{ rpl_id: '1', rpl_rank: '5', rpl_pokemon: 'Giratina' }]; },
+    async listRaidsForSelection() { return []; },
+    async joinRaidFast() { return { status: 'error', text: 'No direct candidate expected.' }; },
     async createMatching() { return { status: 'success' }; },
     async pollMatching() { polls++; return polls < 2 ? { status: 'success', rpllm_status: 1 } : { status: 'success', rpllm_status: 2, rpllm_rpl_id: '1' }; },
     async findRaid() { return { rpl_id: '1', rpl_pokemon: 'Giratina', rpl_code: '999988887777' }; },
@@ -218,6 +243,8 @@ test('allows a new Auto Join attempt after a terminal start rejection with no re
 test('default app persists durable actor snapshots instead of public status', async () => {
   const adapter = {
     async listRaids() { return []; },
+    async listRaidsForSelection() { return []; },
+    async joinRaidFast() { return { status: 'error', text: 'No direct candidate expected.' }; },
     async createMatching() { return { status: 'success' }; },
     async pollMatching() { return { status: 'success', rpllm_status: 1 }; }
   };
@@ -328,6 +355,8 @@ test('returns active raid players and lets the guest leave', async () => {
   let leftId = null;
   const adapter = {
     async listRaids() { return []; },
+    async listRaidsForSelection() { return []; },
+    async joinRaidFast() { return { status: 'error', text: 'No direct candidate expected.' }; },
     async createMatching() { return { status: 'success' }; },
     async pollMatching() { return { status: 'success', rpllm_status: 2, rpllm_rpl_id: 'raid-1' }; },
     async findRaid() { return { rpl_id: 'raid-1', rpl_pokemon: 'Giratina', rpl_tid: 'HostOne', rpl_code: '999988887777' }; },
@@ -376,6 +405,8 @@ test('demo route leaves a deterministic mock match and returns idle', async () =
 test('maps lifecycle conflicts and unavailable operations to stable HTTP statuses', async () => {
   const adapter = {
     async listRaids() { return []; },
+    async listRaidsForSelection() { return []; },
+    async joinRaidFast() { return { status: 'error', text: 'No direct candidate expected.' }; },
     async createMatching() { return { status: 'success' }; },
     async pollMatching() { return { status: 'success', rpllm_status: 1 }; }
   };

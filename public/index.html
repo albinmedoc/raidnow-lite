@@ -124,9 +124,12 @@
 
   <dialog id="filterDialog" class="modal small-modal">
     <form method="dialog" class="modal-header"><div><p class="eyebrow">FILTER</p><h2>Sökinställningar</h2></div><button class="modal-close secondary" value="cancel" aria-label="Stäng">Stäng</button></form>
+    <p class="muted">Inställningarna används både för Auto Join-kön och den direkta lobbybevakningen.</p>
     <div class="form-grid compact">
-      <label>Minsta hostnivå<input id="hostLevel" type="number" min="0" max="80" value="0"></label>
-      <label>Väderboost<select id="weatherBoost"><option value="0">Spelar ingen roll</option><option value="1">Krävs</option><option value="2">Får inte finnas</option></select></label>
+      <label>Minsta hostbetyg<select id="hostRating"><option value="-1">Alla</option><option value="0">0★ eller högre</option><option value="1">1★ eller högre</option><option value="2">2★ eller högre</option><option value="3" selected>3★ eller högre</option><option value="4">4★ eller högre</option><option value="5">Endast 5★</option></select></label>
+      <label>Hostens plats<select id="hostCountry"><option value="0">Alla länder</option><option value="1">Annat land än mitt</option></select></label>
+      <label>Väderboost<select id="weatherBoost"><option value="0">Spelar ingen roll</option><option value="1">Med boost</option><option value="2">Utan boost</option></select></label>
+      <label>Minsta hostnivå<select id="hostLevel"><option value="0">TL 5+</option><option value="40">TL 40+</option><option value="50">TL 50+</option><option value="60">TL 60+</option><option value="70">TL 70+</option></select></label>
     </div>
   </dialog>
 

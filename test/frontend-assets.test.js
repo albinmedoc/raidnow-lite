@@ -50,7 +50,7 @@ test('PWA manifest and HTML expose installable Swedish metadata and local icons'
 
 test('service worker caches only an explicit shell and bypasses APIs, SSE, mutations, and external images', async () => {
   const source = await asset('service-worker.js');
-  assert.match(source, /raidnow-shell-v3/);
+  assert.match(source, /raidnow-shell-v4/);
   assert.match(source, /const SHELL_ASSETS = \[/);
   assert.match(source, /request\.method !== 'GET'/);
   assert.match(source, /url\.origin !== self\.location\.origin/);
@@ -87,6 +87,10 @@ test('browser UI exposes local boss search, trainer identity, and safe reset con
   assert.match(html, /id="activeSelection"/);
   assert.match(html, /Populärast just nu/);
   assert.match(html, /id="popularRaidGrid"/);
+  for (const id of ['hostRating', 'hostCountry', 'weatherBoost', 'hostLevel']) assert.match(html, new RegExp(`id="${id}"`));
+  assert.match(html, /<option value="0">TL 5\+<\/option>/);
+  assert.doesNotMatch(html, /<option value="5">TL 5\+<\/option>/);
+  assert.doesNotMatch(html, /guest6|6 eller fler|Invite 6/i);
 });
 
 test('boss cards are compact, omit Japanese labels, and use a local Dynamax icon', async () => {

@@ -34,6 +34,8 @@ test('persists exact boss identities and search controls in versioned storage', 
   const saved = saveLocalSelection(storage, {
     bossIds: ['5\u0000ザシアン', '3\u0000ピカチュウ'],
     hostLevel: 40,
+    hostRating: 3,
+    hostCountry: 1,
     weatherBoost: 1,
     rankFilter: '5',
     textFilter: 'zaci'
@@ -42,6 +44,8 @@ test('persists exact boss identities and search controls in versioned storage', 
   assert.deepEqual(loadLocalSelection(storage), saved);
   assert.equal(SELECTION_KEY, 'raidnow_selection_v1');
   assert.match(storage.dump(SELECTION_KEY), /5\\u0000ザシアン/);
+  assert.equal(saved.hostRating, 3);
+  assert.equal(saved.hostCountry, 1);
 });
 
 test('ignores malformed, old, and invalid selection storage safely', () => {

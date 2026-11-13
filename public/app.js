@@ -78,6 +78,8 @@ function selectionSnapshot() {
   return {
     bossIds: [...state.selected.keys()],
     hostLevel: Number($('#hostLevel').value || 0),
+    hostRating: Number($('#hostRating').value),
+    hostCountry: Number($('#hostCountry').value || 0),
     weatherBoost: Number($('#weatherBoost').value || 0),
     rankFilter: $('#rankFilter').value,
     textFilter: $('#bossSearch').value
@@ -96,7 +98,7 @@ function updateControls() {
   const workerState = state.autoJoin?.state;
   const locked = isWorkerLocked(workerState) || workerState === 'matched';
   const liveReadOnly = state.config?.mode === 'live' && !state.config.liveWrites;
-  const controls = ['#rankFilter', '#bossSearch', '#hostLevel', '#weatherBoost', '#refreshRaids', '#filterButton'];
+  const controls = ['#rankFilter', '#bossSearch', '#hostRating', '#hostCountry', '#hostLevel', '#weatherBoost', '#refreshRaids', '#filterButton'];
   for (const selector of controls) {
     const control = $(selector);
     control.disabled = locked;
@@ -316,6 +318,8 @@ function applySelectionPreferences(status) {
   const preferences = serverSelection || state.localSelection;
   if (!preferences) return;
   $('#hostLevel').value = String(preferences.hostLevel ?? 0);
+  $('#hostRating').value = String(preferences.hostRating ?? 3);
+  $('#hostCountry').value = String(preferences.hostCountry ?? 0);
   $('#weatherBoost').value = String(preferences.weatherBoost ?? 0);
 }
 
@@ -362,6 +366,8 @@ async function loadProfile() {
   for (const [key, value] of Object.entries(state.profile)) if (form.elements[key]) form.elements[key].value = value;
   if (state.localSelection) {
     $('#hostLevel').value = String(state.localSelection.hostLevel);
+    $('#hostRating').value = String(state.localSelection.hostRating);
+    $('#hostCountry').value = String(state.localSelection.hostCountry);
     $('#weatherBoost').value = String(state.localSelection.weatherBoost);
     $('#rankFilter').value = state.localSelection.rankFilter;
     $('#bossSearch').value = state.localSelection.textFilter;
@@ -423,7 +429,10 @@ async function startSearch() {
     strategy: 'hybrid', profile: state.profile,
     ranks: [...new Set(bosses.map((boss) => String(boss.rank)))],
     pokemon: [...new Set(bosses.flatMap((boss) => boss.pokemon))],
-    hostLevel: Number($('#hostLevel').value || 0), weatherBoost: Number($('#weatherBoost').value || 0)
+    hostLevel: Number($('#hostLevel').value || 0),
+    hostRating: Number($('#hostRating').value),
+    hostCountry: Number($('#hostCountry').value || 0),
+    weatherBoost: Number($('#weatherBoost').value || 0)
   };
   $('#searchMessage').className = 'form-message search-message'; $('#searchMessage').textContent = 'Startar…';
   try {
@@ -575,6 +584,8 @@ function updateLocalFilters() {
 $('#refreshRaids').addEventListener('click', () => loadRaids({ dismissStaleWarning: true }));
 $('#rankFilter').addEventListener('change', updateLocalFilters);
 $('#bossSearch').addEventListener('input', updateLocalFilters);
+$('#hostRating').addEventListener('change', persistSelection);
+$('#hostCountry').addEventListener('change', persistSelection);
 $('#hostLevel').addEventListener('change', persistSelection);
 $('#weatherBoost').addEventListener('change', persistSelection);
 $('#settingsButton').addEventListener('click', () => $('#profileDialog').showModal());

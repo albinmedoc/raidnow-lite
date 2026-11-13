@@ -169,7 +169,8 @@ export class RaidNowAdapter {
       page: 1,
       rank: ranks.length === 1 ? ranks[0] : 0,
       filter,
-      hostLevel: Number(selection.hostLevel || 0)
+      hostLevel: Number(selection.hostLevel || 0),
+      hostEvaluate: Array.isArray(selection.hostEvaluate) ? selection.hostEvaluate : [-1, 0, 1, 2]
     }, { signal });
   }
 
