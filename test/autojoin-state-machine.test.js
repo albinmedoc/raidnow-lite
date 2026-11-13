@@ -249,6 +249,27 @@ test('raid reconciliation failure stays locked and retries', () => {
   assert.equal(failed.lastError, 'lookup unavailable');
 });
 
+test('local abandonment clears only repeated stop uncertainty without a raid', () => {
+  const safe = {
+    ...initialSnapshot(), intent: 'stop', retryCount: 3, opSequence: 12,
+    search: { profile, selection, nextQueuePollAt: null, attemptedRaids: {} },
+    queue: { state: 'unknown' },
+    raid: { state: 'none', target: null, value: null },
+    wake: { kind: 'reconcileQueue', dueAt: now },
+    lastError: 'Raid NOW rejected the request.'
+  };
+  const abandoned = reduce(safe, { type: 'abandonLocal' });
+  assert.equal(abandoned.snapshot.intent, 'idle');
+  assert.equal(abandoned.snapshot.queue.state, 'none');
+  assert.equal(abandoned.snapshot.search, null);
+  assert.equal(abandoned.snapshot.opSequence, 12);
+
+  const unsafe = { ...safe, raid: { state: 'unknown', target: 'raid-1', value: null } };
+  const rejected = reduce(unsafe, { type: 'abandonLocal' });
+  assert.deepEqual(rejected.snapshot, unsafe);
+  assert.match(rejected.effects[0].error, /cannot be forgotten locally/i);
+});
+
 test('stop preserves raid reconciliation when membership is unknown', () => {
   const uncertain = {
     ...initialSnapshot(),
@@ -296,6 +317,52 @@ test('queue reconciliation cannot strand a stopped actor with an unknown raid', 
   assert.equal(reconciled.queue.state, 'none');
   assert.equal(reconciled.raid.state, 'unknown');
   assert.equal(reconciled.wake.kind, 'reconcileRaid');
+});
+
+test('anonymous session expiry disables direct scans and continues queue polling', () => {
+  const scanning = {
+    ...initialSnapshot(), intent: 'search',
+    search: { profile, selection: { ...selection, strategy: 'hybrid' }, nextQueuePollAt: now, attemptedRaids: {} },
+    queue: { state: 'present' },
+    operation: { opId: 'scan-auth', kind: 'scanLobbies', input: {}, startedAt: now, attempt: 1 }
+  };
+  let next = reduce(scanning, {
+    type: 'operationRejected', opId: 'scan-auth', error: 'The session has expired. Please restart.', status: 401, definite: true
+  }).snapshot;
+  assert.equal(next.search.directScanDisabled, true);
+  assert.equal(next.wake.kind, 'pollQueue');
+  assert.equal(next.retryCount, 0);
+  assert.equal(next.lastError, null);
+
+  next = reduce(next, { type: 'wake', kind: 'pollQueue' }).snapshot;
+  assert.equal(next.operation.kind, 'pollQueue');
+  next = reduce(next, {
+    type: 'operationSucceeded', opId: next.operation.opId, value: { status: 'success', rpllm_status: 1 }
+  }).snapshot;
+  assert.equal(next.wake.kind, 'pollQueue');
+});
+
+test('restored direct-scan fallback never resumes lobby scanning', () => {
+  const saved = {
+    ...initialSnapshot(), intent: 'search',
+    search: { profile, selection: { ...selection, strategy: 'hybrid' }, nextQueuePollAt: now, attemptedRaids: {}, directScanDisabled: true },
+    queue: { state: 'present' },
+    wake: { kind: 'scan', dueAt: now }
+  };
+  let restored = migrateSnapshot(saved, { now, pollIntervalMs: 15_000, scanIntervalMs: 1_000 });
+  assert.equal(restored.search.directScanDisabled, true);
+  let resumed = reduce(restored, { type: 'wake', kind: 'scan' }).snapshot;
+  assert.equal(resumed.operation.kind, 'pollQueue');
+
+  restored = migrateSnapshot({
+    ...saved,
+    wake: null,
+    operation: { opId: 'scan-before-restart', kind: 'scanLobbies', input: { selection }, startedAt: now, attempt: 2 }
+  }, { now, pollIntervalMs: 15_000, scanIntervalMs: 1_000 });
+  assert.equal(restored.search.directScanDisabled, true);
+  assert.equal(restored.wake.kind, 'scan');
+  resumed = reduce(restored, { type: 'wake', kind: 'scan' }).snapshot;
+  assert.equal(resumed.operation.kind, 'pollQueue');
 });
 
 test('hybrid read failures keep direct scan cadence and queue due time', () => {

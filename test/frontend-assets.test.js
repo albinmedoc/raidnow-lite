@@ -50,7 +50,7 @@ test('PWA manifest and HTML expose installable Swedish metadata and local icons'
 
 test('service worker caches only an explicit shell and bypasses APIs, SSE, mutations, and external images', async () => {
   const source = await asset('service-worker.js');
-  assert.match(source, /raidnow-shell-v4/);
+  assert.match(source, /raidnow-shell-v5/);
   assert.match(source, /const SHELL_ASSETS = \[/);
   assert.match(source, /request\.method !== 'GET'/);
   assert.match(source, /url\.origin !== self\.location\.origin/);
@@ -80,10 +80,15 @@ test('notification setup requires a direct tap, registers push with the server, 
 
 test('browser UI exposes local boss search, trainer identity, and safe reset controls', async () => {
   const html = await asset('index.html');
+  const source = await asset('app.js');
   assert.match(html, /id="bossSearch"/);
   assert.match(html, /id="trainerNameLabel"/);
   assert.match(html, /id="resetBrowser"/);
   assert.match(html, /Återställ denna webbläsare/);
+  assert.match(html, /id="abandonSearch"/);
+  assert.match(html, /Glöm sökningen lokalt/);
+  assert.match(source, /\/api\/autojoin\/abandon/);
+  assert.match(source, /eventuell.*Raid NOW-kö/is);
   assert.match(html, /id="activeSelection"/);
   assert.match(html, /Populärast just nu/);
   assert.match(html, /id="popularRaidGrid"/);

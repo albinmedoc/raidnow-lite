@@ -329,7 +329,9 @@ function renderStatus(status) {
   const labels = {
     idle: ['Auto Join är av', 'Välj raidbossar och starta sökningen.'],
     starting: ['Startar sökning', 'Ställer dig i kö och startar lobbybevakningen…'],
-    searching: ['Söker i bakgrunden', 'Du står i kö samtidigt som nya lobbyer bevakas.'],
+    searching: ['Söker i bakgrunden', status.directScanDisabled
+      ? 'Auto Join-kön fortsätter. Direkt lobbybevakning är tillfälligt otillgänglig hos Raid NOW.'
+      : 'Du står i kö samtidigt som nya lobbyer bevakas.'],
     retrying: ['Anslutningen återställs', status.error || 'Nytt försök schemalagt.'],
     joining: ['Ansluter till raid', 'En matchning har hittats och anslutningen slutförs…'],
     stopping: ['Stoppar sökning', status.error || 'Sökningen avslutas säkert…'],
@@ -347,6 +349,7 @@ function renderStatus(status) {
   const matched = status.state === 'matched' && status.raid;
   const showSearchStatus = ['starting', 'searching', 'retrying', 'joining', 'stopping', 'reconciling', 'error'].includes(status.state);
   $('#statusCard').classList.toggle('hidden', !showSearchStatus);
+  $('#abandonSearch').classList.toggle('hidden', !status.canAbandonLocal);
   $('#matchedPanel').classList.toggle('hidden', !matched);
   updateActiveRaidPolling(matched);
   if (matched) {
@@ -445,6 +448,18 @@ async function startSearch() {
 
 $('#quickStartSearch').addEventListener('click', startSearch);
 $('#stopSearch').addEventListener('click', async () => renderStatus(await api('/api/autojoin/stop', { method: 'POST', body: '{}' })));
+$('#abandonSearch').addEventListener('click', async () => {
+  const warning = 'Detta glömmer endast den lokala sökningen. En eventuell Raid NOW-kö avbryts inte och kan finnas kvar tills den löper ut. Fortsätt?';
+  if (!window.confirm(warning)) return;
+  try {
+    renderStatus(await api('/api/autojoin/abandon', { method: 'POST', body: '{}' }));
+    $('#searchMessage').className = 'form-message search-message';
+    $('#searchMessage').textContent = 'Den lokala sökningen har glömts. Vänta en stund innan du startar igen om Raid NOW-kön fortfarande finns kvar.';
+  } catch (error) {
+    $('#searchMessage').className = 'form-message search-message error';
+    $('#searchMessage').textContent = error.message;
+  }
+});
 
 $('#leaveRaid').addEventListener('click', async () => {
   if (!window.confirm('Vill du lämna den aktiva raiden?')) return;

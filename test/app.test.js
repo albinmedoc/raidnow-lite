@@ -402,6 +402,39 @@ test('demo route leaves a deterministic mock match and returns idle', async () =
   } finally { await close(app); }
 });
 
+test('allows explicit local abandonment only for repeated safe queue uncertainty', async () => {
+  const app = await startTestApp({ async checkMatching() { return { id: 'still-present' }; } });
+  try {
+    await app.worker.restore({
+      schemaVersion: 2,
+      intent: 'stop',
+      startedAt: '2026-11-13T08:00:00.000Z',
+      search: {
+        profile: { trainerName: 'Albin123', trainerCode: '123456789012', level: 50, countryCode: 'se' },
+        selection: { strategy: 'hybrid', ranks: ['5'], pokemon: ['Giratina'] },
+        nextQueuePollAt: null,
+        attemptedRaids: {}
+      },
+      queue: { state: 'unknown' },
+      raid: { state: 'none', target: null, value: null },
+      operation: null,
+      wake: { kind: 'reconcileQueue', dueAt: new Date(Date.now() + 60_000).toISOString() },
+      terminal: { target: 'stopped', error: null },
+      lastContactAt: null,
+      retryCount: 3,
+      lastError: 'Raid NOW rejected the request.',
+      opSequence: 12
+    });
+    const response = await fetch(`${app.baseUrl}/api/autojoin/abandon`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}'
+    });
+    assert.equal(response.status, 200);
+    const status = await response.json();
+    assert.equal(status.state, 'idle');
+    assert.equal(status.canAbandonLocal, false);
+  } finally { await close(app); }
+});
+
 test('maps lifecycle conflicts and unavailable operations to stable HTTP statuses', async () => {
   const adapter = {
     async listRaids() { return []; },

@@ -16,6 +16,7 @@ const DEFAULT_SSE_HEARTBEAT_MS = 15_000;
 const MUTATION_ROUTES = new Set([
   'POST /api/login', 'POST /api/session/import', 'PUT /api/profile',
   'POST /api/autojoin/start', 'POST /api/autojoin/stop',
+  'POST /api/autojoin/abandon',
   'POST /api/active-raid/leave', 'POST /api/session/reset',
   'POST /api/push/subscriptions', 'DELETE /api/push/subscriptions'
 ]);
@@ -29,6 +30,7 @@ const STATEFUL_API_METHODS = new Map([
   ['/api/active-raid', new Set(['GET'])],
   ['/api/autojoin/start', new Set(['POST'])],
   ['/api/autojoin/stop', new Set(['POST'])],
+  ['/api/autojoin/abandon', new Set(['POST'])],
   ['/api/active-raid/leave', new Set(['POST'])],
   ['/api/session/reset', new Set(['POST'])],
   ['/api/push/subscriptions', new Set(['POST', 'DELETE'])],
@@ -255,6 +257,10 @@ export function createApp({ adapter, store, sessionManager = null, pushNotifier 
       if (request.method === 'POST' && url.pathname === '/api/autojoin/stop') {
         if (restoreLocked) return sendJson(response, 409, { message: restoreFailure.error });
         return sendJson(response, 200, await worker.stop());
+      }
+      if (request.method === 'POST' && url.pathname === '/api/autojoin/abandon') {
+        if (restoreLocked) return sendJson(response, 409, { message: restoreFailure.error });
+        return sendJson(response, 200, await worker.abandonLocal());
       }
       if (request.method === 'POST' && url.pathname === '/api/active-raid/leave') {
         if (restoreLocked) return sendJson(response, 409, { message: restoreFailure.error });

@@ -37,7 +37,10 @@
         <p id="statusText">Sökningen körs i bakgrunden.</p>
         <div class="status-meta"><span id="lastContact">Ingen kontakt ännu</span><span id="nextPoll">—</span></div>
       </div>
-      <button id="stopSearch" class="danger">Stoppa sökning</button>
+      <div class="actions">
+        <button id="abandonSearch" class="secondary hidden" type="button">Glöm sökningen lokalt</button>
+        <button id="stopSearch" class="danger">Stoppa sökning</button>
+      </div>
     </section>
 
     <section id="matchedPanel" class="active-raid-panel hidden" aria-live="assertive">

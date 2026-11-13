@@ -439,6 +439,104 @@ test('retrying status exposes lastError through error', async () => {
   assert.equal(status.error, 'temporary scan failure');
 });
 
+test('hybrid session expiry falls back to the Auto Join queue', async () => {
+  const clock = new FakeClock();
+  let scans = 0;
+  let polls = 0;
+  const worker = new AutoJoinWorker({
+    adapter: {
+      async createMatching() { return { status: 'success' }; },
+      async listRaidsForSelection() {
+        scans += 1;
+        const error = new Error('The session has expired. Please restart.');
+        error.status = 401;
+        throw error;
+      },
+      async joinRaidFast() { return { status: 'success' }; },
+      async pollMatching() { polls += 1; return { status: 'success', rpllm_status: 1 }; }
+    },
+    pollIntervalMs: 2_000,
+    scanIntervalMs: 1_000,
+    clock
+  });
+  await worker.start({ profile, selection: { ...selection, strategy: 'hybrid' } });
+  await flush();
+  await clock.tick(0);
+  await flush();
+  await clock.tick(0);
+  await flush();
+  assert.equal(scans, 1);
+  assert.equal(polls, 1);
+  assert.equal(worker.status().state, 'searching');
+  assert.equal(worker.status().directScanDisabled, true);
+});
+
+test('worker exposes and executes safe local abandonment', async () => {
+  const clock = new FakeClock();
+  const persisted = [];
+  const worker = new AutoJoinWorker({
+    adapter: { async checkMatching() { return { id: 'still-present' }; } },
+    pollIntervalMs: 15_000,
+    clock,
+    persist: async (snapshot) => persisted.push(snapshot)
+  });
+  await worker.restore({
+    ...initialSnapshot(), intent: 'stop', retryCount: 3, opSequence: 12,
+    search: { profile, selection, nextQueuePollAt: null, attemptedRaids: {} },
+    queue: { state: 'unknown' },
+    wake: { kind: 'reconcileQueue', dueAt: new Date(clock.now()).toISOString() },
+    lastError: 'Raid NOW rejected the request.'
+  });
+  assert.equal(worker.status().canAbandonLocal, true);
+  await worker.abandonLocal();
+  assert.equal(worker.status().state, 'idle');
+  assert.equal(worker.status().canAbandonLocal, false);
+  assert.equal(persisted.at(-1).queue.state, 'none');
+});
+
+test('local abandonment atomically aborts an active queue check and ignores its late result', async () => {
+  const clock = new FakeClock();
+  const persisted = [];
+  let resolveCheck;
+  let checkSignal;
+  const worker = new AutoJoinWorker({
+    adapter: {
+      checkMatching(_input, { signal }) {
+        checkSignal = signal;
+        return new Promise((resolve) => { resolveCheck = resolve; });
+      }
+    },
+    clock,
+    persist: async (snapshot) => persisted.push(snapshot)
+  });
+  await worker.restore({
+    ...initialSnapshot(), intent: 'stop', retryCount: 3, opSequence: 12,
+    search: { profile, selection, nextQueuePollAt: null, attemptedRaids: {} },
+    queue: { state: 'unknown' },
+    operation: { opId: 'check-12', kind: 'checkQueue', input: { profile, selection }, startedAt: new Date(clock.now()).toISOString(), attempt: 3 },
+    lastError: 'Raid NOW rejected the request.'
+  });
+  await clock.tick(0);
+  await flush();
+  assert.equal(worker.status().canAbandonLocal, true);
+  assert.ok(checkSignal);
+  await worker.abandonLocal();
+  assert.equal(checkSignal.aborted, true);
+  assert.equal(worker.status().state, 'idle');
+  resolveCheck({});
+  await flush();
+  assert.equal(worker.status().state, 'idle');
+  assert.equal(persisted.at(-1).queue.state, 'none');
+});
+
+test('unsafe local abandonment is a lifecycle conflict', async () => {
+  const worker = new AutoJoinWorker({ adapter: {} });
+  await assert.rejects(
+    () => worker.abandonLocal(),
+    (error) => error.status === 409 && error.code === 'AUTOJOIN_CONFLICT'
+  );
+});
+
 test('hybrid failures retry scans each second without delaying queue polls', async () => {
   const clock = new FakeClock();
   let scans = 0;

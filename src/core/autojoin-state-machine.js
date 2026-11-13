@@ -152,6 +152,15 @@ function afterReadFailure(snapshot, event, config) {
   const next = { ...snapshot, operation: null, lastError: message, retryCount: Number(snapshot.retryCount || 0) + 1 };
   if (snapshot.intent === 'stop' || snapshot.intent === 'leave') return beginQueueCleanup(next, config.now);
   const strategy = snapshot.search?.selection?.strategy;
+  if (kind === 'scanLobbies' && event.status === 401 && strategy === 'hybrid') {
+    next.search = { ...next.search, directScanDisabled: true };
+    next.retryCount = 0;
+    next.lastError = null;
+    return withWake(next, 'pollQueue', config.now, 0);
+  }
+  if (kind === 'pollQueue' && snapshot.search?.directScanDisabled) {
+    return withWake(next, 'pollQueue', config.now, Math.min(config.pollIntervalMs * 2, 60_000));
+  }
   if (kind === 'scanLobbies' || (kind === 'pollQueue' && strategy === 'hybrid')) {
     return withWake(next, 'scan', config.now, config.scanIntervalMs ?? 1_000);
   }
@@ -197,6 +206,19 @@ export function reduceAutoJoin(current, event, config) {
     return withOperation(base, 'checkQueue', { profile: event.profile, selection: event.selection }, now);
   }
 
+  if (event.type === 'abandonLocal') {
+    const safe = snapshot.intent === 'stop' &&
+      snapshot.queue.state === 'unknown' &&
+      snapshot.raid.state === 'none' &&
+      !snapshot.raid.target &&
+      !snapshot.raid.value &&
+      Number(snapshot.retryCount || 0) >= 3 &&
+      (!snapshot.operation || snapshot.operation.kind === 'checkQueue');
+    if (!safe) return { snapshot, effects: [{ type: 'reject', error: 'This search cannot be forgotten locally while a raid or unsafe operation may still exist.' }] };
+    const effects = snapshot.operation ? [{ type: 'abort', opId: snapshot.operation.opId }] : [];
+    return { snapshot: { ...initialSnapshot(), opSequence: snapshot.opSequence }, effects };
+  }
+
   if (event.type === 'stop') {
     if (snapshot.raid.state === 'matched') {
       const next = { ...snapshot, intent: snapshot.queue.state === 'none' ? snapshot.intent : 'stop' };
@@ -232,6 +254,7 @@ export function reduceAutoJoin(current, event, config) {
   if (event.type === 'wake') {
     if (!snapshot.wake || snapshot.wake.kind !== event.kind || snapshot.operation) return noChange(snapshot);
     const next = { ...snapshot, wake: null };
+    if (event.kind === 'scan' && next.search?.directScanDisabled) return withOperation(next, 'pollQueue', { profile: next.search?.profile, selection: next.search?.selection }, now);
     if (event.kind === 'scan') return withOperation(next, 'scanLobbies', { selection: next.search?.selection }, now);
     if (event.kind === 'pollQueue') return withOperation(next, 'pollQueue', { profile: next.search?.profile, selection: next.search?.selection }, now);
     if (event.kind === 'reconcileQueue') return withOperation(next, 'checkQueue', { profile: next.search?.profile, selection: next.search?.selection }, now, Number(next.retryCount || 0) + 1);
@@ -353,7 +376,7 @@ export function reduceAutoJoin(current, event, config) {
         );
       }
       if (next.intent === 'stop' || next.intent === 'leave') return beginQueueCleanup(next, now);
-      return withWake(next, next.search?.selection?.strategy === 'hybrid' ? 'scan' : 'pollQueue', now, next.search?.selection?.strategy === 'hybrid' ? scanIntervalMs : pollIntervalMs);
+      return withWake(next, next.search?.selection?.strategy === 'hybrid' && !next.search?.directScanDisabled ? 'scan' : 'pollQueue', now, next.search?.selection?.strategy === 'hybrid' && !next.search?.directScanDisabled ? scanIntervalMs : pollIntervalMs);
     }
     if (kind === 'cancelQueue') {
       return withOperation({ ...snapshot, queue: { state: 'unknown' }, operation: null, lastContactAt: now }, 'checkQueue', { profile: snapshot.search?.profile, selection: snapshot.search?.selection }, now);
@@ -364,7 +387,7 @@ export function reduceAutoJoin(current, event, config) {
       if (present) {
         next.queue = { state: 'present' };
         if (next.intent === 'stop' || next.intent === 'leave' || next.raid.state === 'matched') return beginQueueCleanup(next, now);
-        return withWake(next, next.search?.selection?.strategy === 'hybrid' ? 'scan' : 'pollQueue', now, next.search?.selection?.strategy === 'hybrid' ? 0 : pollIntervalMs);
+        return withWake(next, next.search?.selection?.strategy === 'hybrid' && !next.search?.directScanDisabled ? 'scan' : 'pollQueue', now, next.search?.selection?.strategy === 'hybrid' && !next.search?.directScanDisabled ? 0 : pollIntervalMs);
       }
       next.queue = { state: 'none' };
       next.retryCount = 0;
@@ -392,6 +415,7 @@ export function migrateSnapshot(saved, config) {
   if (saved.schemaVersion === 2) {
     let next = { ...initialSnapshot(), ...clone(saved) };
     if (next.search?.selection) next.search.selection = normalizeRestoredSearchSelection(next.search.selection);
+    if (next.search) next.search.directScanDisabled = next.search.directScanDisabled === true;
     const op = next.operation;
     next.operation = null;
     if (op?.kind === 'createQueue' || op?.kind === 'cancelQueue') {

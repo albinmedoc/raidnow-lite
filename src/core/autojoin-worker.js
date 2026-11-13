@@ -28,6 +28,14 @@ export class AutoJoinUnavailableError extends Error {
   }
 }
 
+export class AutoJoinConflictError extends Error {
+  constructor(message) {
+    super(message);
+    this.status = 409;
+    this.code = 'AUTOJOIN_CONFLICT';
+  }
+}
+
 export class AutoJoinWorker extends EventEmitter {
   #adapter;
   #persist;
@@ -69,6 +77,13 @@ export class AutoJoinWorker extends EventEmitter {
 
     const queueCancelPending = snapshot.queue.state !== 'none' &&
       (snapshot.intent === 'stop' || snapshot.intent === 'leave' || matched || snapshot.terminal.target === 'error');
+    const canAbandonLocal = snapshot.intent === 'stop' &&
+      snapshot.queue.state === 'unknown' &&
+      snapshot.raid.state === 'none' &&
+      !snapshot.raid.target &&
+      !snapshot.raid.value &&
+      Number(snapshot.retryCount || 0) >= 3 &&
+      (!snapshot.operation || snapshot.operation.kind === 'checkQueue');
     const nextAt = snapshot.wake?.dueAt ?? null;
     return {
       state,
@@ -80,6 +95,8 @@ export class AutoJoinWorker extends EventEmitter {
       selection: clone(snapshot.search?.selection ?? null),
       raid: clone(snapshot.raid.value ?? null),
       queueCancelPending,
+      canAbandonLocal,
+      directScanDisabled: Boolean(snapshot.search?.directScanDisabled),
       retryCount: Number(snapshot.retryCount || 0),
       lastError: snapshot.lastError,
       nextRetryAt: snapshot.wake?.kind.startsWith('reconcile') ? nextAt : null
@@ -117,6 +134,10 @@ export class AutoJoinWorker extends EventEmitter {
 
   stop() {
     return this.#dispatch({ type: 'stop' }).then(() => this.status());
+  }
+
+  abandonLocal() {
+    return this.#dispatch({ type: 'abandonLocal' }).then(() => this.status());
   }
 
   leaveRaid() {
@@ -166,7 +187,7 @@ export class AutoJoinWorker extends EventEmitter {
   async #process(event) {
     const transition = reduceAutoJoin(this.#snapshot, event, this.#config());
     const rejection = transition.effects.find((effect) => effect.type === 'reject');
-    if (rejection) throw new Error(rejection.error);
+    if (rejection) throw new AutoJoinConflictError(rejection.error);
     await this.#persist(clone(transition.snapshot));
     this.#snapshot = transition.snapshot;
     this.emit('state', this.status());
@@ -213,6 +234,7 @@ export class AutoJoinWorker extends EventEmitter {
           type: 'operationRejected',
           opId,
           error: message(error),
+          status: error?.status,
           definite: !['createQueue', 'cancelQueue', 'joinRaid', 'leaveRaid'].includes(operation.kind)
         });
       })
