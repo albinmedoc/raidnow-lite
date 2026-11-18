@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { AutoJoinWorker } from '../src/core/autojoin-worker.js';
 import { initialSnapshot } from '../src/core/autojoin-state-machine.js';
+import { RaidNowAdapter } from '../src/adapters/raidnow-adapter.js';
 
 const profile = { trainerName: 'Albin123', trainerCode: '123456789012', level: 50, countryCode: 'se' };
 const selection = { ranks: ['5'], pokemon: ['Giratina'] };
@@ -348,6 +349,151 @@ test('reconcileRaid calls findRaid for the uncertain target', async () => {
   await clock.tick(0);
   await waitFor(worker, (status) => status.state === 'matched');
   assert.deepEqual(ids, ['raid-1']);
+});
+
+test('matched validation executes findRaid and retries ambiguous membership until confirmed absent', async (t) => {
+  const clock = new FakeClock();
+  const responses = [
+    { rpl_id: 'raid-1', join: null },
+    {},
+    { rpl_id: 'raid-1', join: 'invalid' },
+    { rpl_id: 'raid-1', join: 0 }
+  ];
+  let calls = 0;
+  const worker = new AutoJoinWorker({
+    adapter: { async findRaid() { calls += 1; return responses.shift(); } },
+    matchedValidationIntervalMs: 25,
+    clock
+  });
+  t.after(() => worker.shutdown());
+  await worker.restore({
+    ...initialSnapshot(),
+    raid: { state: 'matched', target: 'raid-1', value: { rpl_id: 'raid-1', join: 1 } },
+    wake: { kind: 'revalidateMatched', dueAt: new Date(clock.now()).toISOString() },
+    terminal: { target: 'matched', error: null }
+  });
+
+  await clock.tick(0);
+  await waitFor(worker, () => calls === 1);
+  assert.equal(worker.status().state, 'matched');
+  for (let expected = 2; expected <= 4; expected += 1) {
+    await clock.tick(expected === 2 ? 25 : expected === 3 ? 50 : 100);
+    await waitFor(worker, () => calls === expected);
+    if (expected < 4) assert.equal(worker.status().state, 'matched');
+  }
+  assert.equal(worker.status().state, 'idle');
+});
+
+test('matched validation retains the durable match through failed and malformed raid lists', async (t) => {
+  const clock = new FakeClock();
+  const responses = [
+    { status: 'error', text: 'Raid lookup failed.', list: [] },
+    [{ unexpected: 'shape' }],
+    []
+  ];
+  let calls = 0;
+  const adapter = new RaidNowAdapter({
+    fetchImpl: async () => {
+      calls += 1;
+      const value = responses.shift();
+      return {
+        ok: true,
+        status: 200,
+        async text() { return JSON.stringify(value); }
+      };
+    }
+  });
+  const worker = new AutoJoinWorker({ adapter, matchedValidationIntervalMs: 25, clock });
+  t.after(() => worker.shutdown());
+  await worker.restore({
+    ...initialSnapshot(),
+    raid: { state: 'matched', target: 'raid-1', value: { rpl_id: 'raid-1', join: 1 } },
+    wake: { kind: 'revalidateMatched', dueAt: new Date(clock.now()).toISOString() },
+    terminal: { target: 'matched', error: null }
+  });
+
+  await clock.tick(0);
+  await waitFor(worker, (status) => calls === 1 && /lookup failed/i.test(status.lastError || ''));
+  assert.equal(worker.status().state, 'matched');
+  assert.equal(worker.status().raid.rpl_id, 'raid-1');
+  assert.match(worker.status().lastError, /lookup failed/i);
+
+  await clock.tick(25);
+  await waitFor(worker, (status) => calls === 2 && /malformed|raid list/i.test(status.lastError || ''));
+  assert.equal(worker.status().state, 'matched');
+  assert.equal(worker.status().raid.rpl_id, 'raid-1');
+  assert.match(worker.status().lastError, /malformed|raid list/i);
+
+  await clock.tick(50);
+  await waitFor(worker, () => calls === 3);
+  assert.equal(worker.status().state, 'idle');
+});
+
+test('leave requested during active matched validation wins after join=1 confirmation', async (t) => {
+  const clock = new FakeClock();
+  let resolveValidation;
+  let validationStarted = false;
+  const leaves = [];
+  const worker = new AutoJoinWorker({
+    adapter: {
+      findRaid() {
+        validationStarted = true;
+        return new Promise((resolve) => { resolveValidation = resolve; });
+      },
+      async leaveRaid(id) { leaves.push(id); return { status: 'success' }; }
+    },
+    matchedValidationIntervalMs: 25,
+    clock
+  });
+  t.after(() => worker.shutdown());
+  await worker.restore({
+    ...initialSnapshot(),
+    raid: { state: 'matched', target: 'raid-1', value: { rpl_id: 'raid-1', join: 1 } },
+    wake: { kind: 'revalidateMatched', dueAt: new Date(clock.now()).toISOString() },
+    terminal: { target: 'matched', error: null }
+  });
+  await clock.tick(0);
+  await waitFor(worker, () => validationStarted);
+
+  const leaving = worker.leaveRaid();
+  await flush();
+  assert.deepEqual(leaves, []);
+  resolveValidation({ rpl_id: 'raid-1', join: 1 });
+  assert.equal((await leaving).state, 'idle');
+  assert.deepEqual(leaves, ['raid-1']);
+});
+
+test('leave requested during active matched validation resolves without a write after confirmed absence', async (t) => {
+  const clock = new FakeClock();
+  let resolveValidation;
+  let validationStarted = false;
+  let leaves = 0;
+  const worker = new AutoJoinWorker({
+    adapter: {
+      findRaid() {
+        validationStarted = true;
+        return new Promise((resolve) => { resolveValidation = resolve; });
+      },
+      async leaveRaid() { leaves += 1; return { status: 'success' }; }
+    },
+    matchedValidationIntervalMs: 25,
+    clock
+  });
+  t.after(() => worker.shutdown());
+  await worker.restore({
+    ...initialSnapshot(),
+    raid: { state: 'matched', target: 'raid-1', value: { rpl_id: 'raid-1', join: 1 } },
+    wake: { kind: 'revalidateMatched', dueAt: new Date(clock.now()).toISOString() },
+    terminal: { target: 'matched', error: null }
+  });
+  await clock.tick(0);
+  await waitFor(worker, () => validationStarted);
+
+  const leaving = worker.leaveRaid();
+  await flush();
+  resolveValidation(null);
+  assert.equal((await leaving).state, 'idle');
+  assert.equal(leaves, 0);
 });
 
 test('missing findRaid remains locked and exposes the retry error', async () => {

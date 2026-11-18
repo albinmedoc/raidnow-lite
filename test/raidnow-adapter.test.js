@@ -198,6 +198,39 @@ test('finds the requested raid from the raw par_find_first array', async () => {
   assert.equal(calls[0].body.get('firstaccess'), 'b');
 });
 
+test('findRaid distinguishes valid absence from malformed or failed raid lists', async () => {
+  for (const response of [
+    [],
+    { list: [] },
+    { status: 'success', list: [] },
+    [{ rpl_id: 'other-raid' }],
+    { status: 'success', list: [{ rpl_id: 'other-raid' }] }
+  ]) {
+    const adapter = new RaidNowAdapter({ fetchImpl: fakeFetch([response], []) });
+    assert.equal(await adapter.findRaid('missing'), null);
+  }
+
+  for (const response of [
+    {},
+    { list: null },
+    { list: {} },
+    { status: 'error', text: 'Raid lookup failed.', list: [] },
+    [{ unexpected: 'shape' }],
+    [{ rpl_id: 'other-raid' }, { unexpected: 'shape' }]
+  ]) {
+    const adapter = new RaidNowAdapter({ fetchImpl: fakeFetch([response], []) });
+    await assert.rejects(() => adapter.findRaid('raid-1'), /malformed|raid list|lookup failed/i);
+  }
+});
+
+test('findRaid preserves membership markers for state-machine validation', async () => {
+  for (const join of [null, 'invalid', 0, 1]) {
+    const raid = { rpl_id: 'raid-1', join };
+    const adapter = new RaidNowAdapter({ fetchImpl: fakeFetch([[raid]], []) });
+    assert.deepEqual(await adapter.findRaid('raid-1'), raid);
+  }
+});
+
 test('loads player levels and bounded Raid NOW guest ratings in an active raid', async () => {
   const calls = [];
   const response = { list: [

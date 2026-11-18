@@ -3,7 +3,11 @@ import { initialSnapshot, migrateSnapshot, reduceAutoJoin } from './autojoin-sta
 
 const defaultClock = {
   now: () => Date.now(),
-  setTimeout: (callback, delay) => globalThis.setTimeout(callback, delay),
+  setTimeout: (callback, delay) => {
+    const handle = globalThis.setTimeout(callback, delay);
+    handle.unref?.();
+    return handle;
+  },
   clearTimeout: (handle) => globalThis.clearTimeout(handle)
 };
 
@@ -43,6 +47,7 @@ export class AutoJoinWorker extends EventEmitter {
   #runOperation;
   #pollIntervalMs;
   #scanIntervalMs;
+  #matchedValidationIntervalMs;
   #snapshot = initialSnapshot();
   #mailbox = Promise.resolve();
   #timer = null;
@@ -52,7 +57,7 @@ export class AutoJoinWorker extends EventEmitter {
   #recoverPromise = null;
   #waiters = new Set();
 
-  constructor({ adapter, pollIntervalMs = 15_000, scanIntervalMs = 1_000, persist = async () => {}, clock = defaultClock, runOperation = runDirect }) {
+  constructor({ adapter, pollIntervalMs = 15_000, scanIntervalMs = 1_000, matchedValidationIntervalMs = 60_000, persist = async () => {}, clock = defaultClock, runOperation = runDirect }) {
     super();
     this.#adapter = adapter;
     this.#persist = persist;
@@ -60,6 +65,7 @@ export class AutoJoinWorker extends EventEmitter {
     this.#runOperation = runOperation;
     this.#pollIntervalMs = pollIntervalMs;
     this.#scanIntervalMs = scanIntervalMs;
+    this.#matchedValidationIntervalMs = matchedValidationIntervalMs;
   }
 
   status() {
@@ -169,7 +175,8 @@ export class AutoJoinWorker extends EventEmitter {
     return {
       now: new Date(this.#clock.now()).toISOString(),
       pollIntervalMs: this.#pollIntervalMs,
-      scanIntervalMs: this.#scanIntervalMs
+      scanIntervalMs: this.#scanIntervalMs,
+      matchedValidationIntervalMs: this.#matchedValidationIntervalMs
     };
   }
 
@@ -273,6 +280,7 @@ export class AutoJoinWorker extends EventEmitter {
       case 'leaveRaid':
         return this.#adapter.leaveRaid(input.raidId, { signal });
       case 'verifyMembership':
+      case 'verifyMatched':
         if (!this.#adapter.findRaid) throw new Error('Raid reconciliation requires adapter.findRaid().');
         if (!input.raidId) throw new Error('Raid reconciliation requires a target raid ID.');
         return this.#adapter.findRaid(input.raidId, { signal });

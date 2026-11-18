@@ -1,6 +1,8 @@
 import { normalizeRestoredSearchSelection } from './search-selection.js';
 
 const WRITE_KINDS = new Set(['createQueue', 'cancelQueue', 'joinRaid', 'leaveRaid']);
+const MATCHED_VALIDATION_INTERVAL_MS = 60_000;
+const MATCHED_VALIDATION_MAX_RETRY_MS = 5 * 60_000;
 
 export function initialSnapshot() {
   return {
@@ -108,15 +110,29 @@ function terminalize(snapshot) {
   return snapshot;
 }
 
+function scheduleMatchedValidation(snapshot, now, delay, effects = []) {
+  const scheduled = withWake({ ...snapshot, operation: null }, 'revalidateMatched', now, delay);
+  return { snapshot: scheduled.snapshot, effects: [...effects, ...scheduled.effects] };
+}
+
+function membershipResult(value) {
+  if (value === null) return 'absent';
+  if (!value || typeof value !== 'object') return 'ambiguous';
+  if (value.join === 1 || value.join === '1') return 'present';
+  if (value.join === 0 || value.join === '0') return 'absent';
+  return 'ambiguous';
+}
+
 function beginRaidReconciliation(snapshot, now, effects = []) {
   const scheduled = withWake({ ...snapshot, raid: { ...snapshot.raid, state: 'unknown' } }, 'reconcileRaid', now, 0);
   return { snapshot: scheduled.snapshot, effects: [...effects, ...scheduled.effects] };
 }
 
-function beginQueueCleanup(snapshot, now, effects = []) {
+function beginQueueCleanup(snapshot, now, matchedValidationIntervalMs, effects = []) {
   if (snapshot.operation) return { snapshot, effects };
   if (snapshot.queue.state === 'none') {
     if (snapshot.raid.state === 'unknown') return beginRaidReconciliation(snapshot, now, effects);
+    if (snapshot.raid.state === 'matched') return scheduleMatchedValidation(snapshot, now, matchedValidationIntervalMs, effects);
     return { snapshot: terminalize(snapshot), effects };
   }
   if (snapshot.queue.state === 'present') {
@@ -126,7 +142,7 @@ function beginQueueCleanup(snapshot, now, effects = []) {
   return withWake({ ...snapshot, queue: { state: 'unknown' } }, 'reconcileQueue', now, 0);
 }
 
-function matchRaid(snapshot, raid, now) {
+function matchRaid(snapshot, raid, now, matchedValidationIntervalMs) {
   let next = {
     ...snapshot,
     raid: { state: 'matched', target: String(raid?.rpl_id ?? snapshot.raid.target ?? ''), value: clone(raid) },
@@ -142,15 +158,18 @@ function matchRaid(snapshot, raid, now) {
     const cleanup = withOperation({ ...next, queue: { state: 'canceling' } }, 'cancelQueue', {}, now);
     next = cleanup.snapshot;
     effects.push(...cleanup.effects);
+    return { snapshot: next, effects };
   }
-  return { snapshot: next, effects };
+  return scheduleMatchedValidation(next, now, matchedValidationIntervalMs, effects);
 }
 
 function afterReadFailure(snapshot, event, config) {
   const message = errorText(event);
   const kind = snapshot.operation?.kind;
   const next = { ...snapshot, operation: null, lastError: message, retryCount: Number(snapshot.retryCount || 0) + 1 };
-  if (snapshot.intent === 'stop' || snapshot.intent === 'leave') return beginQueueCleanup(next, config.now);
+  if (snapshot.intent === 'stop' || snapshot.intent === 'leave') {
+    return beginQueueCleanup(next, config.now, config.matchedValidationIntervalMs ?? MATCHED_VALIDATION_INTERVAL_MS);
+  }
   const strategy = snapshot.search?.selection?.strategy;
   if (kind === 'scanLobbies' && event.status === 401 && strategy === 'hybrid') {
     next.search = { ...next.search, directScanDisabled: true };
@@ -173,6 +192,7 @@ export function reduceAutoJoin(current, event, config) {
   const now = config.now;
   const pollIntervalMs = config.pollIntervalMs;
   const scanIntervalMs = config.scanIntervalMs ?? 1_000;
+  const matchedValidationIntervalMs = config.matchedValidationIntervalMs ?? MATCHED_VALIDATION_INTERVAL_MS;
 
   if (event.type === 'start') {
     if (snapshot.operation || snapshot.wake || snapshot.queue.state !== 'none' || snapshot.raid.state !== 'none' || snapshot.intent === 'search') {
@@ -222,7 +242,7 @@ export function reduceAutoJoin(current, event, config) {
   if (event.type === 'stop') {
     if (snapshot.raid.state === 'matched') {
       const next = { ...snapshot, intent: snapshot.queue.state === 'none' ? snapshot.intent : 'stop' };
-      return beginQueueCleanup(next, now);
+      return beginQueueCleanup(next, now, matchedValidationIntervalMs);
     }
     let next = { ...snapshot, intent: 'stop', terminal: { target: 'stopped', error: null }, wake: null };
     if (next.operation?.kind === 'createQueue') {
@@ -236,10 +256,10 @@ export function reduceAutoJoin(current, event, config) {
     if (next.operation && !WRITE_KINDS.has(next.operation.kind)) {
       const opId = next.operation.opId;
       next.operation = null;
-      const cleanup = beginQueueCleanup(next, now, [{ type: 'abort', opId }]);
+      const cleanup = beginQueueCleanup(next, now, matchedValidationIntervalMs, [{ type: 'abort', opId }]);
       return cleanup;
     }
-    return beginQueueCleanup(next, now);
+    return beginQueueCleanup(next, now, matchedValidationIntervalMs);
   }
 
   if (event.type === 'leave') {
@@ -247,7 +267,7 @@ export function reduceAutoJoin(current, event, config) {
       return { snapshot, effects: [{ type: 'reject', error: 'There is no active raid to leave.' }] };
     }
     const next = { ...snapshot, intent: 'leave', terminal: { target: 'idle', error: null } };
-    if (next.operation || next.queue.state !== 'none') return beginQueueCleanup(next, now);
+    if (next.operation || next.queue.state !== 'none') return beginQueueCleanup(next, now, matchedValidationIntervalMs);
     return withOperation({ ...next, raid: { ...next.raid, state: 'leaving' } }, 'leaveRaid', { raidId: next.raid.value.rpl_id }, now);
   }
 
@@ -259,6 +279,7 @@ export function reduceAutoJoin(current, event, config) {
     if (event.kind === 'pollQueue') return withOperation(next, 'pollQueue', { profile: next.search?.profile, selection: next.search?.selection }, now);
     if (event.kind === 'reconcileQueue') return withOperation(next, 'checkQueue', { profile: next.search?.profile, selection: next.search?.selection }, now, Number(next.retryCount || 0) + 1);
     if (event.kind === 'reconcileRaid') return withOperation(next, 'verifyMembership', { raidId: next.raid.target ?? next.raid.value?.rpl_id }, now, Number(next.retryCount || 0) + 1);
+    if (event.kind === 'revalidateMatched') return withOperation(next, 'verifyMatched', { raidId: next.raid.target ?? next.raid.value?.rpl_id }, now, Number(next.retryCount || 0) + 1);
     return withWake(next, event.kind, now, Math.min(pollIntervalMs * Math.max(1, 2 ** Number(next.retryCount || 0)), 60_000));
   }
 
@@ -277,12 +298,19 @@ export function reduceAutoJoin(current, event, config) {
       if (!event.definite) return withWake({ ...snapshot, raid: { ...snapshot.raid, state: 'unknown' }, operation: null, lastError: message }, 'reconcileRaid', now, pollIntervalMs);
       const next = { ...snapshot, raid: { state: 'none', target: null, value: null }, operation: null, lastError: message };
       if (next.search?.attemptedRaids && snapshot.raid.target) delete next.search.attemptedRaids[String(snapshot.raid.target)];
-      if (next.intent === 'stop') return beginQueueCleanup(next, now);
+      if (next.intent === 'stop') return beginQueueCleanup(next, now, matchedValidationIntervalMs);
       return withWake(next, 'scan', now, scanIntervalMs);
     }
     if (kind === 'leaveRaid') {
       if (!event.definite) return withWake({ ...snapshot, raid: { ...snapshot.raid, state: 'unknown' }, operation: null, lastError: message }, 'reconcileRaid', now, pollIntervalMs);
-      return { snapshot: { ...snapshot, raid: { ...snapshot.raid, state: 'matched' }, operation: null, intent: 'idle', terminal: { target: 'matched', error: message }, lastError: message }, effects: [] };
+      return scheduleMatchedValidation({
+        ...snapshot,
+        raid: { ...snapshot.raid, state: 'matched' },
+        operation: null,
+        intent: 'idle',
+        terminal: { target: 'matched', error: message },
+        lastError: message
+      }, now, matchedValidationIntervalMs);
     }
     if (kind === 'verifyMembership') {
       return withWake({
@@ -292,6 +320,25 @@ export function reduceAutoJoin(current, event, config) {
         retryCount: Number(snapshot.retryCount || 0) + 1,
         lastError: message
       }, 'reconcileRaid', now, pollIntervalMs);
+    }
+    if (kind === 'verifyMatched') {
+      const retryCount = Number(snapshot.retryCount || 0) + 1;
+      if (snapshot.intent === 'leave') {
+        return beginRaidReconciliation({
+          ...snapshot,
+          raid: { ...snapshot.raid, state: 'unknown' },
+          operation: null,
+          retryCount,
+          lastError: message
+        }, now);
+      }
+      const delay = Math.min(matchedValidationIntervalMs * (2 ** Math.max(0, retryCount - 1)), MATCHED_VALIDATION_MAX_RETRY_MS);
+      return scheduleMatchedValidation({
+        ...snapshot,
+        operation: null,
+        retryCount,
+        lastError: message
+      }, now, delay);
     }
     return afterReadFailure(snapshot, event, config);
   }
@@ -305,14 +352,14 @@ export function reduceAutoJoin(current, event, config) {
     }
     if (kind === 'createQueue') {
       const next = { ...snapshot, queue: { state: 'present' }, operation: null, lastContactAt: now };
-      if (next.intent === 'stop') return beginQueueCleanup(next, now);
+      if (next.intent === 'stop') return beginQueueCleanup(next, now, matchedValidationIntervalMs);
       return withWake(next, next.search?.selection?.strategy === 'hybrid' ? 'scan' : 'pollQueue', now, next.search?.selection?.strategy === 'hybrid' ? 0 : pollIntervalMs);
     }
     if (kind === 'scanLobbies') {
       const candidate = selectedRaid(snapshot, value, now);
       let next = { ...snapshot, operation: null, lastContactAt: now };
       if (!candidate) {
-        if (next.intent === 'stop' || next.intent === 'leave') return beginQueueCleanup(next, now);
+        if (next.intent === 'stop' || next.intent === 'leave') return beginQueueCleanup(next, now, matchedValidationIntervalMs);
         const queueDue = Date.parse(next.search?.nextQueuePollAt || '');
         if (next.search?.selection?.strategy === 'hybrid' && Number.isFinite(queueDue) && queueDue <= Date.parse(now)) {
           next.search.nextQueuePollAt = at(now, pollIntervalMs);
@@ -320,16 +367,17 @@ export function reduceAutoJoin(current, event, config) {
         }
         return withWake(next, 'scan', now, scanIntervalMs);
       }
-      if (Number(candidate.join || 0) === 1) return matchRaid(next, candidate, now);
+      if (Number(candidate.join || 0) === 1) return matchRaid(next, candidate, now, matchedValidationIntervalMs);
       next.search.attemptedRaids[String(candidate.rpl_id)] = now;
       return withOperation({ ...next, raid: { state: 'joining', target: String(candidate.rpl_id), value: clone(candidate) } }, 'joinRaid', { raid: candidate, raidId: candidate.rpl_id, profile: next.search.profile }, now);
     }
     if (kind === 'joinRaid') {
       const raid = value?.data || snapshot.operation.input.raid || snapshot.raid.value;
-      return matchRaid(snapshot, raid, now);
+      return matchRaid(snapshot, raid, now, matchedValidationIntervalMs);
     }
-    if (kind === 'verifyMembership') {
-      if (value && Number(value.join || 0) === 1) {
+    if (kind === 'verifyMatched') {
+      const membership = membershipResult(value);
+      if (membership === 'present') {
         if (snapshot.intent === 'leave') {
           return withOperation({
             ...snapshot,
@@ -340,10 +388,57 @@ export function reduceAutoJoin(current, event, config) {
             lastError: null
           }, 'leaveRaid', { raidId: value.rpl_id ?? snapshot.raid.target }, now);
         }
-        return matchRaid(snapshot, value, now);
+        return scheduleMatchedValidation({
+          ...snapshot,
+          raid: { state: 'matched', target: String(value.rpl_id ?? snapshot.raid.target ?? ''), value: clone(value) },
+          operation: null,
+          lastContactAt: now,
+          retryCount: 0,
+          lastError: null,
+          terminal: { target: 'matched', error: null }
+        }, now, matchedValidationIntervalMs);
       }
-      const confirmedAbsent = value == null || Object.hasOwn(value, 'join');
-      if (!confirmedAbsent) {
+      if (membership === 'absent') {
+        return {
+          snapshot: { ...initialSnapshot(), opSequence: snapshot.opSequence, lastContactAt: now },
+          effects: []
+        };
+      }
+      const retryCount = Number(snapshot.retryCount || 0) + 1;
+      if (snapshot.intent === 'leave') {
+        return beginRaidReconciliation({
+          ...snapshot,
+          raid: { ...snapshot.raid, state: 'unknown' },
+          operation: null,
+          lastContactAt: now,
+          retryCount,
+          lastError: 'Raid membership could not be confirmed.'
+        }, now);
+      }
+      return scheduleMatchedValidation({
+        ...snapshot,
+        operation: null,
+        lastContactAt: now,
+        retryCount,
+        lastError: 'Raid membership could not be confirmed.'
+      }, now, Math.min(matchedValidationIntervalMs * (2 ** Math.max(0, retryCount - 1)), MATCHED_VALIDATION_MAX_RETRY_MS));
+    }
+    if (kind === 'verifyMembership') {
+      const membership = membershipResult(value);
+      if (membership === 'present') {
+        if (snapshot.intent === 'leave') {
+          return withOperation({
+            ...snapshot,
+            raid: { state: 'leaving', target: String(value.rpl_id ?? snapshot.raid.target ?? ''), value: clone(value) },
+            operation: null,
+            lastContactAt: now,
+            retryCount: 0,
+            lastError: null
+          }, 'leaveRaid', { raidId: value.rpl_id ?? snapshot.raid.target }, now);
+        }
+        return matchRaid(snapshot, value, now, matchedValidationIntervalMs);
+      }
+      if (membership === 'ambiguous') {
         return withWake({
           ...snapshot,
           raid: { ...snapshot.raid, state: 'unknown' },
@@ -362,7 +457,7 @@ export function reduceAutoJoin(current, event, config) {
         lastError: null
       };
       if (next.intent === 'leave') return { snapshot: terminalize(next), effects: [] };
-      if (next.intent === 'stop') return beginQueueCleanup(next, now);
+      if (next.intent === 'stop') return beginQueueCleanup(next, now, matchedValidationIntervalMs);
       const strategy = next.search?.selection?.strategy;
       return withWake(next, strategy === 'fast' || strategy === 'hybrid' ? 'scan' : 'pollQueue', now, strategy === 'fast' || strategy === 'hybrid' ? scanIntervalMs : pollIntervalMs);
     }
@@ -372,10 +467,11 @@ export function reduceAutoJoin(current, event, config) {
         return matchRaid(
           { ...next, queue: { state: 'none' } },
           value.raid || { rpl_id: value.rpllm_rpl_id, rpl_pokemon: value.pokemon },
-          now
+          now,
+          matchedValidationIntervalMs
         );
       }
-      if (next.intent === 'stop' || next.intent === 'leave') return beginQueueCleanup(next, now);
+      if (next.intent === 'stop' || next.intent === 'leave') return beginQueueCleanup(next, now, matchedValidationIntervalMs);
       return withWake(next, next.search?.selection?.strategy === 'hybrid' && !next.search?.directScanDisabled ? 'scan' : 'pollQueue', now, next.search?.selection?.strategy === 'hybrid' && !next.search?.directScanDisabled ? scanIntervalMs : pollIntervalMs);
     }
     if (kind === 'cancelQueue') {
@@ -386,7 +482,7 @@ export function reduceAutoJoin(current, event, config) {
       let next = { ...snapshot, operation: null, lastContactAt: now };
       if (present) {
         next.queue = { state: 'present' };
-        if (next.intent === 'stop' || next.intent === 'leave' || next.raid.state === 'matched') return beginQueueCleanup(next, now);
+        if (next.intent === 'stop' || next.intent === 'leave' || next.raid.state === 'matched') return beginQueueCleanup(next, now, matchedValidationIntervalMs);
         return withWake(next, next.search?.selection?.strategy === 'hybrid' && !next.search?.directScanDisabled ? 'scan' : 'pollQueue', now, next.search?.selection?.strategy === 'hybrid' && !next.search?.directScanDisabled ? 0 : pollIntervalMs);
       }
       next.queue = { state: 'none' };
@@ -397,7 +493,7 @@ export function reduceAutoJoin(current, event, config) {
         return withOperation({ ...next, queue: { state: 'creating' } }, 'createQueue', { profile: next.search.profile, selection: next.search.selection }, now);
       }
       if (next.intent === 'leave' && next.raid.value?.rpl_id) return withOperation({ ...next, raid: { ...next.raid, state: 'leaving' } }, 'leaveRaid', { raidId: next.raid.value.rpl_id }, now);
-      return beginQueueCleanup(next, now);
+      return beginQueueCleanup(next, now, matchedValidationIntervalMs);
     }
     if (kind === 'leaveRaid') {
       const next = { ...snapshot, raid: { state: 'none', target: null, value: null }, operation: null, lastContactAt: now };
@@ -430,11 +526,16 @@ export function migrateSnapshot(saved, config) {
     } else if (op?.kind === 'verifyMembership') {
       next.raid = { ...next.raid, state: 'unknown' };
       next.wake = { kind: 'reconcileRaid', dueAt: now };
+    } else if (op?.kind === 'verifyMatched') {
+      next.raid = { ...next.raid, state: 'matched' };
+      next.wake = { kind: 'revalidateMatched', dueAt: now };
     } else if (op?.kind === 'checkQueue') {
       next.queue = { state: 'unknown' };
       next.wake = { kind: 'reconcileQueue', dueAt: now };
     } else if (op) {
       next.wake = { kind: next.search?.selection?.strategy === 'fast' || next.search?.selection?.strategy === 'hybrid' ? 'scan' : 'pollQueue', dueAt: now };
+    } else if (!next.wake && next.queue.state === 'none' && next.raid.state === 'matched') {
+      next.wake = { kind: 'revalidateMatched', dueAt: now };
     }
     return next;
   }
@@ -452,6 +553,8 @@ export function migrateSnapshot(saved, config) {
     next.intent = saved.state === 'matched' ? 'idle' : 'stop';
     next.queue = { state: 'unknown' };
     next.wake = { kind: 'reconcileQueue', dueAt: saved.nextRetryAt ?? now };
+  } else if (next.raid.state === 'matched') {
+    next.wake = { kind: 'revalidateMatched', dueAt: now };
   }
   return next;
 }

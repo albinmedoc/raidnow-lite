@@ -263,8 +263,14 @@ export class RaidNowAdapter {
       hostlevel: 0,
       hostevaluate: []
     }, { signal });
-    if (Array.isArray(response)) return response.find((raid) => String(raid.rpl_id) === String(id)) ?? null;
-    return response?.list?.find((raid) => String(raid.rpl_id) === String(id)) ?? null;
+    if (!Array.isArray(response) && response?.status && response.status !== 'success') {
+      throw upstreamResponseError(response, 'Raid NOW rejected the raid lookup request.');
+    }
+    const raids = Array.isArray(response) ? response : response && Array.isArray(response.list) ? response.list : null;
+    const validRaid = (raid) => raid && typeof raid === 'object' && !Array.isArray(raid)
+      && raid.rpl_id !== undefined && raid.rpl_id !== null && String(raid.rpl_id).trim() !== '';
+    if (!raids || !raids.every(validRaid)) throw new Error('Raid NOW returned a malformed raid list.');
+    return raids.find((raid) => String(raid.rpl_id) === String(id)) ?? null;
   }
 
   async listRaidPlayers(id, { signal } = {}) {
