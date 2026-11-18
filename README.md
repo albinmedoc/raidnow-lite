@@ -23,6 +23,10 @@ A small, self-hosted, mobile-friendly client for Raid NOW. It keeps raid searchi
 - Includes a deterministic demo mode that performs no live Raid NOW writes.
 - Installs as a private PWA and supports per-browser-session Web Push when served over HTTPS.
 
+## Integration documentation
+
+See [`docs/raidnow-api.md`](docs/raidnow-api.md) for the upstream Raid NOW operations, payload fields, local HTTP/SSE API, hybrid search flow, session isolation, and reconciliation behavior.
+
 ## Requirements
 
 Choose one of the following:
