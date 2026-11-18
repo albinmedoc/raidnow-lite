@@ -1,11 +1,39 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createBrowserResetController, formatTrainerCode, isCurrentMatchedRaid } from '../public/ui-helpers.js';
+import {
+  countryFlag,
+  createBrowserResetController,
+  formatRaidRating,
+  formatTrainerCode,
+  isCurrentMatchedRaid
+} from '../public/ui-helpers.js';
 
 test('formats a trainer code into selectable four-digit groups', () => {
   assert.equal(formatTrainerCode('999988887777'), '9999 8888 7777');
   assert.equal(formatTrainerCode(' 9999-8888-7777 '), '9999 8888 7777');
   assert.equal(formatTrainerCode(''), '—');
+});
+
+test('formats zero-star and missing Raid NOW ratings explicitly', () => {
+  assert.deepEqual(formatRaidRating(0), {
+    text: '★ 0/5',
+    title: 'Raid NOW-rating: 0 av 5'
+  });
+  assert.deepEqual(formatRaidRating(5), {
+    text: '★ 5/5',
+    title: 'Raid NOW-rating: 5 av 5'
+  });
+  assert.deepEqual(formatRaidRating(null), {
+    text: '★ —',
+    title: 'Raid NOW-rating saknas'
+  });
+});
+
+test('renders country and worldwide flags from normalized player countries', () => {
+  assert.equal(countryFlag('se'), '🇸🇪');
+  assert.equal(countryFlag('world'), '🌐');
+  assert.equal(countryFlag(''), '');
+  assert.equal(countryFlag('invalid'), '');
 });
 
 test('rejects stale raid details after leaving or changing raids', () => {

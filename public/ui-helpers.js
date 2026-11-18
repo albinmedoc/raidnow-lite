@@ -26,6 +26,20 @@ export function formatTrainerCode(value) {
   return digits.match(/.{1,4}/g).join(' ');
 }
 
+export function countryFlag(value) {
+  const code = String(value || '').trim().toUpperCase();
+  if (code === 'WORLD') return '🌐';
+  if (!/^[A-Z]{2}$/.test(code)) return '';
+  return String.fromCodePoint(...[...code].map((character) => 127397 + character.charCodeAt(0)));
+}
+
+export function formatRaidRating(value) {
+  const available = Number.isInteger(value) && value >= 0 && value <= 5;
+  return available
+    ? { text: `★ ${value}/5`, title: `Raid NOW-rating: ${value} av 5` }
+    : { text: '★ —', title: 'Raid NOW-rating saknas' };
+}
+
 export function isCurrentMatchedRaid(status, raid) {
   return status?.state === 'matched'
     && Boolean(status.raid?.rpl_id)

@@ -69,6 +69,25 @@ function upstreamResponseError(response, fallback) {
   return error;
 }
 
+function normalizeGuestRating(primary, fallback) {
+  for (const value of [primary, fallback]) {
+    if (value === undefined || value === null || String(value).trim() === '') continue;
+    const rating = Number(value);
+    if (rating === -1) return 0;
+    return Number.isInteger(rating) && rating >= 1 && rating <= 5 ? rating : null;
+  }
+  return null;
+}
+
+function normalizePlayerCountry(countryCode, language) {
+  const explicit = String(countryCode || '').trim().toLowerCase();
+  if (explicit) return explicit;
+  const normalizedLanguage = language === undefined || language === null ? '' : String(language).trim();
+  if (normalizedLanguage === '0') return 'jp';
+  if (normalizedLanguage === '1') return 'world';
+  return '';
+}
+
 export class RaidNowAdapter {
   #fetch;
   #url;
@@ -259,7 +278,8 @@ export class RaidNowAdapter {
       id: player.rplc_id,
       trainerName: player.rplc_tid,
       level: Number(player.rplc_level || 0),
-      countryCode: player.rplc_country_code || '',
+      countryCode: normalizePlayerCountry(player.rplc_country_code, player.rplc_lang),
+      rating: normalizeGuestRating(player.evaluatescore_guest, player.pc_raid_evaluate_score_guest),
       ready: Number(player.rplc_ready || 0),
       isMe: Number(player.my || 0) === 1
     }));

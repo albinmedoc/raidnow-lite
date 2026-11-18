@@ -50,7 +50,7 @@ test('PWA manifest and HTML expose installable Swedish metadata and local icons'
 
 test('service worker caches only an explicit shell and bypasses APIs, SSE, mutations, and external images', async () => {
   const source = await asset('service-worker.js');
-  assert.match(source, /raidnow-shell-v5/);
+  assert.match(source, /raidnow-shell-v9/);
   assert.match(source, /const SHELL_ASSETS = \[/);
   assert.match(source, /request\.method !== 'GET'/);
   assert.match(source, /url\.origin !== self\.location\.origin/);
@@ -159,7 +159,12 @@ test('browser copy control exposes a selectable grouped code and safe fallback',
 });
 
 test('matched raid UI keeps copy and exposes an accessible local QR dialog', async () => {
-  const [html, source] = await Promise.all([asset('index.html'), asset('app.js')]);
+  const [html, source, css, helpers] = await Promise.all([
+    asset('index.html'),
+    asset('app.js'),
+    asset('styles.css'),
+    asset('ui-helpers.js')
+  ]);
   assert.match(html, /id="copyCode"/);
   assert.match(html, /id="showQrCode"/);
   assert.match(html, />Visa QR-kod</);
@@ -167,11 +172,20 @@ test('matched raid UI keeps copy and exposes an accessible local QR dialog', asy
   assert.match(html, /id="trainerCodeQrImage"/);
   assert.match(html, /id="trainerCodeQrFallback"/);
   assert.match(html, /id="copyQrCode"/);
+  assert.match(html, /id="activeRaidQrImage"/);
+  assert.match(html, /class="active-raid-qr"/);
   assert.match(source, /createTrainerCodeQrController/);
+  assert.match(source, /activeRaidQrImage/);
+  assert.match(source, /player\.rating/);
+  assert.match(source, /countryFlag/);
+  assert.match(source, /formatRaidRating/);
+  assert.match(helpers, /Raid NOW-rating/);
   assert.match(source, /setHostTrainerCode\(details\.raid\.rpl_code\)/);
   assert.match(source, /setHostTrainerCode\(status\.raid\.rpl_code\)/);
   assert.match(source, /setHostTrainerCode\(null\)/);
   assert.doesNotMatch(source, /state\.profile\.trainerCode[^\n]*createTrainerCodeQr/);
+  assert.match(css, /@media\(min-width:801px\)\{[\s\S]*?\.active-raid-qr\{display:flex/);
+  assert.match(css, /@media\(max-width:520px\)\{[\s\S]*?\.player-row\{align-items:flex-start;flex-direction:column/);
 });
 
 test('production files contain no external QR image service URL', async () => {

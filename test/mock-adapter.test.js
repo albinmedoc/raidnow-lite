@@ -22,6 +22,17 @@ test('mock adapter supports deterministic fast joining', async () => {
   assert.equal(response.data.join, 1);
 });
 
+test('mock adapter exposes rated lobby players for UI verification', async () => {
+  const adapter = new MockRaidNowAdapter();
+  const raid = (await adapter.listRaids())[0];
+  const details = await adapter.listRaidPlayers(raid.rpl_id);
+  assert.equal(details.players[0].level, 50);
+  assert.equal(details.players[0].rating, 5);
+  assert.equal(details.players[0].countryCode, 'se');
+  assert.equal(details.players[2].rating, 0);
+  assert.equal(details.readyCount, 1);
+});
+
 test('mock adapter leaves a matched demo raid without upstream writes', async () => {
   const adapter = new MockRaidNowAdapter({ matchAfterPolls: 1 });
   const raid = (await adapter.listRaids())[0];

@@ -198,14 +198,37 @@ test('finds the requested raid from the raw par_find_first array', async () => {
   assert.equal(calls[0].body.get('firstaccess'), 'b');
 });
 
-test('loads the players in an active raid', async () => {
+test('loads player levels and bounded Raid NOW guest ratings in an active raid', async () => {
   const calls = [];
-  const response = { list: [{ rplc_tid: 'PlayerOne', rplc_level: 50, my: 1 }], count: 1, readycount: 0 };
+  const response = { list: [
+    { rplc_tid: 'PlayerOne', rplc_level: 50, rplc_country_code: 'se', evaluatescore_guest: '5', my: 1 },
+    { rplc_tid: 'PlayerTwo', rplc_level: 44, rplc_lang: 0, evaluatescore_guest: '-1', my: 0 },
+    { rplc_tid: 'PlayerThree', rplc_level: 42, rplc_lang: 1, evaluatescore_guest: '', pc_raid_evaluate_score_guest: '4', my: 0 },
+    { rplc_tid: 'PlayerFour', rplc_level: 40, evaluatescore_guest: 'invalid', pc_raid_evaluate_score_guest: '99', my: 0 },
+    { rplc_tid: 'BlankLanguage', rplc_lang: '', my: 0 },
+    { rplc_tid: 'WhitespaceLanguage', rplc_lang: '   ', my: 0 },
+    { rplc_tid: 'NullLanguage', rplc_lang: null, my: 0 },
+    { rplc_tid: 'StringJapan', rplc_lang: '0', my: 0 },
+    { rplc_tid: 'StringWorld', rplc_lang: '1', my: 0 }
+  ], count: 9, readycount: 0 };
   const adapter = new RaidNowAdapter({ fetchImpl: fakeFetch([response], calls), token: 'token' });
   const result = await adapter.listRaidPlayers('raid-1');
   assert.equal(result.players[0].trainerName, 'PlayerOne');
   assert.equal(result.players[0].level, 50);
+  assert.equal(result.players[0].countryCode, 'se');
+  assert.equal(result.players[0].rating, 5);
   assert.equal(result.players[0].isMe, true);
+  assert.equal(result.players[1].rating, 0);
+  assert.equal(result.players[1].countryCode, 'jp');
+  assert.equal(result.players[2].rating, 4);
+  assert.equal(result.players[2].countryCode, 'world');
+  assert.equal(result.players[3].rating, null);
+  assert.equal(result.players[3].countryCode, '');
+  assert.equal(result.players[4].countryCode, '');
+  assert.equal(result.players[5].countryCode, '');
+  assert.equal(result.players[6].countryCode, '');
+  assert.equal(result.players[7].countryCode, 'jp');
+  assert.equal(result.players[8].countryCode, 'world');
   assert.equal(calls[0].body.get('type'), 'child_list');
   assert.equal(calls[0].body.get('parid'), 'raid-1');
 });

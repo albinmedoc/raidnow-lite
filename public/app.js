@@ -1,5 +1,5 @@
 import { clearLocalProfile, loadLocalProfile, saveLocalProfile } from './profile-storage.js';
-import { createBrowserResetController, isCurrentMatchedRaid } from './ui-helpers.js';
+import { countryFlag, createBrowserResetController, formatRaidRating, isCurrentMatchedRaid } from './ui-helpers.js';
 import { createTrainerCodeQrController } from './trainer-code-qr.js';
 import {
   catalogForWorkerView,
@@ -256,21 +256,27 @@ function setHostTrainerCode(value) {
   const qr = trainerCodeQr.update(value);
   const dialog = $('#trainerCodeQrDialog');
   const image = $('#trainerCodeQrImage');
+  const desktopImage = $('#activeRaidQrImage');
   $('#copyCode').dataset.code = qr?.payload || '';
   $('#copyQrCode').dataset.code = qr?.payload || '';
   $('#activeRaidCode').textContent = qr?.grouped || '—';
   $('#trainerCodeQrFallback').textContent = qr?.grouped || '—';
   $('#showQrCode').disabled = !qr;
   if (!qr) {
-    image.hidden = true;
-    image.removeAttribute('src');
-    image.alt = '';
+    for (const target of [image, desktopImage]) {
+      target.hidden = true;
+      target.removeAttribute('src');
+      target.alt = '';
+    }
     if (dialog.open) dialog.close();
     return;
   }
   image.src = qr.imageUrl;
   image.alt = `QR-kod för trainer code ${qr.grouped}`;
   image.hidden = false;
+  desktopImage.src = qr.imageUrl;
+  desktopImage.alt = `QR-kod för trainer code ${qr.grouped}`;
+  desktopImage.hidden = false;
 }
 
 async function loadActiveRaid() {
@@ -279,6 +285,7 @@ async function loadActiveRaid() {
     if (!isCurrentMatchedRaid(state.autoJoin, details.raid)) return;
     $('#matchedBoss').textContent = bossName(details.raid.rpl_pokemon || details.raid.display_name);
     $('#activeRaidHost').textContent = details.raid.rpl_tid || 'Okänd host';
+    $('#activeRaidHostMeta').textContent = Number(details.raid.rpl_level) > 0 ? `TL ${Number(details.raid.rpl_level)}` : '';
     $('#activeRaidCount').textContent = String(details.count ?? details.players.length);
     $('#activeRaidReady').textContent = `${details.readyCount ?? 0}/${details.count ?? details.players.length}`;
     $('#activeRaidMeta').textContent = `Uppdaterad ${formatTime(details.fetchedAt)}`;
@@ -291,8 +298,24 @@ async function loadActiveRaid() {
       const strong = document.createElement('strong'); strong.textContent = player.trainerName || 'Okänd spelare';
       name.append(strong);
       if (player.isMe) { const me = document.createElement('span'); me.className = 'player-me'; me.textContent = 'Du'; name.append(me); }
+      const flag = countryFlag(player.countryCode);
+      if (flag) {
+        const country = document.createElement('span'); country.className = 'player-country'; country.textContent = flag;
+        country.title = String(player.countryCode || '').toUpperCase();
+        name.prepend(country);
+      }
       const meta = document.createElement('span'); meta.className = 'player-meta';
-      meta.textContent = `TL ${player.level || '?'}${player.ready === 1 ? ' · Redo' : ''}`;
+      const level = document.createElement('span'); level.className = 'player-fact'; level.textContent = `TL ${player.level || '?'}`;
+      const rating = document.createElement('span'); rating.className = 'player-fact player-rating';
+      const ratingDisplay = formatRaidRating(player.rating);
+      rating.textContent = ratingDisplay.text;
+      rating.title = ratingDisplay.title;
+      rating.setAttribute('aria-label', rating.title);
+      meta.append(level, rating);
+      if (player.ready === 1) {
+        const ready = document.createElement('span'); ready.className = 'player-fact player-ready'; ready.textContent = 'Redo';
+        meta.append(ready);
+      }
       row.append(name, meta); list.append(row);
     }
     if (!details.players.length) {

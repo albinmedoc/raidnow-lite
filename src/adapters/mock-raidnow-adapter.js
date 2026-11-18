@@ -57,6 +57,21 @@ export class MockRaidNowAdapter {
     return structuredClone(this.#raids.find((raid) => String(raid.rpl_id) === String(id)) ?? null);
   }
 
+  async listRaidPlayers(id) {
+    const raid = this.#raids.find((item) => String(item.rpl_id) === String(id));
+    if (!raid) return { players: [], count: 0, readyCount: 0, raidDeleted: true };
+    return {
+      players: [
+        { id: 'demo-player-1', trainerName: 'DemoTrainer', level: 50, countryCode: 'se', rating: 5, ready: 1, isMe: true },
+        { id: 'demo-player-2', trainerName: 'RaidFriend', level: 47, countryCode: 'de', rating: 4, ready: 0, isMe: false },
+        { id: 'demo-player-3', trainerName: 'NewTrainer', level: 41, countryCode: 'jp', rating: 0, ready: 0, isMe: false }
+      ],
+      count: 3,
+      readyCount: 1,
+      raidDeleted: false
+    };
+  }
+
   async leaveRaid(id) {
     const raid = this.#raids.find((item) => String(item.rpl_id) === String(id));
     if (!raid || raid.join !== 1) return { status: 'error', text: 'Raid membership not found.' };
