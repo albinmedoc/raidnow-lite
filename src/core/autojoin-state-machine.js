@@ -308,6 +308,9 @@ export function reduceAutoJoin(current, event, config) {
       if (next.intent === 'leave' && ['matched', 'unknown'].includes(next.raid.state)) {
         return beginQueueCleanup(next, now, matchedValidationIntervalMs);
       }
+      if (next.intent === 'stop' && next.raid.state === 'none' && next.retryCount >= 3) {
+        return { snapshot: { ...next, wake: null }, effects: [] };
+      }
       return withWake(next, 'reconcileQueue', now, pollIntervalMs);
     }
     if (kind === 'joinRaid') {

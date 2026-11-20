@@ -258,12 +258,14 @@ test('leave aborts an in-flight queue read before reconciling raid membership', 
   worker.shutdown();
 });
 
-test('finished leave exposes safe local abandonment for an unremovable queue', async () => {
+test('finished leave exposes stable local abandonment for an unremovable queue', async () => {
   const clock = new FakeClock();
+  let queueChecks = 0;
+  let cancellations = 0;
   const worker = new AutoJoinWorker({
     adapter: {
-      async checkMatching() { return { id: 'still-present' }; },
-      async cancelMatching() { throw new Error('cancel rejected'); }
+      async checkMatching() { queueChecks += 1; return { id: 'still-present' }; },
+      async cancelMatching() { cancellations += 1; throw new Error('cancel rejected'); }
     },
     pollIntervalMs: 100,
     clock
@@ -283,6 +285,12 @@ test('finished leave exposes safe local abandonment for an unremovable queue', a
   const status = await waitFor(worker, (value) => value.canAbandonLocal);
   assert.equal(status.state, 'reconciling');
   assert.equal(status.raid, null);
+  assert.equal(status.nextRetryAt, null);
+  assert.equal(queueChecks, 1);
+  assert.equal(cancellations, 1);
+  await clock.tick(5_000);
+  assert.equal(queueChecks, 1);
+  assert.equal(cancellations, 1);
   await worker.abandonLocal();
   assert.equal(worker.status().state, 'idle');
   worker.shutdown();
