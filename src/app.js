@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AutoJoinWorker } from './core/autojoin-worker.js';
+import { CliCommandError } from './adapters/cli-process-runner.js';
 import { normalizeSearchSelection } from './core/search-selection.js';
 import { normalizeProfile, validateProfile } from './core/validation.js';
 import { buildRaidBossCatalog, enrichRaids, groupRaidBosses } from './core/raid-catalog.js';
@@ -17,7 +18,7 @@ const MUTATION_ROUTES = new Set([
   'POST /api/login', 'POST /api/session/import', 'PUT /api/profile',
   'POST /api/autojoin/start', 'POST /api/autojoin/stop',
   'POST /api/autojoin/abandon',
-  'POST /api/active-raid/leave', 'POST /api/session/reset',
+  'POST /api/active-raid/ready', 'POST /api/active-raid/leave', 'POST /api/session/reset',
   'POST /api/push/subscriptions', 'DELETE /api/push/subscriptions'
 ]);
 const STATEFUL_API_METHODS = new Map([
@@ -31,6 +32,7 @@ const STATEFUL_API_METHODS = new Map([
   ['/api/autojoin/start', new Set(['POST'])],
   ['/api/autojoin/stop', new Set(['POST'])],
   ['/api/autojoin/abandon', new Set(['POST'])],
+  ['/api/active-raid/ready', new Set(['POST'])],
   ['/api/active-raid/leave', new Set(['POST'])],
   ['/api/session/reset', new Set(['POST'])],
   ['/api/push/subscriptions', new Set(['POST', 'DELETE'])],
@@ -241,8 +243,14 @@ export function createApp({ adapter, store, sessionManager = null, pushNotifier 
         const status = worker.status();
         if (status.state !== 'matched' || !status.raid?.rpl_id) return sendJson(response, 404, { message: 'There is no active raid.' });
         if (!activeAdapter.listRaidPlayers) return sendJson(response, 501, { message: 'Player details are unavailable in this mode.' });
-        const details = await activeAdapter.listRaidPlayers(status.raid.rpl_id);
-        return sendJson(response, 200, { raid: enrichRaids([status.raid])[0], ...details, fetchedAt: new Date().toISOString() });
+        const [details, exactRaid] = await Promise.all([
+          activeAdapter.listRaidPlayers(status.raid.rpl_id),
+          activeAdapter.findRaid
+            ? activeAdapter.findRaid(status.raid.rpl_id).catch(() => null)
+            : null
+        ]);
+        const raid = exactRaid || status.raid;
+        return sendJson(response, 200, { raid: enrichRaids([raid])[0], ...details, fetchedAt: new Date().toISOString() });
       }
       if (request.method === 'POST' && url.pathname === '/api/autojoin/start') {
         if (restoreLocked) return sendJson(response, 409, { message: restoreFailure.error });
@@ -264,6 +272,37 @@ export function createApp({ adapter, store, sessionManager = null, pushNotifier 
       if (request.method === 'POST' && url.pathname === '/api/autojoin/abandon') {
         if (restoreLocked) return sendJson(response, 409, { message: restoreFailure.error });
         return sendJson(response, 200, await worker.abandonLocal());
+      }
+      if (request.method === 'POST' && url.pathname === '/api/active-raid/ready') {
+        if (restoreLocked) return sendJson(response, 409, { message: restoreFailure.error });
+        const status = worker.status();
+        if (status.state !== 'matched' || !status.raid?.rpl_id) return sendJson(response, 404, { message: 'There is no active raid.' });
+        if (!activeAdapter.markRaidReady) return sendJson(response, 501, { message: 'Ready reporting is unavailable in this mode.' });
+        try {
+          await activeAdapter.markRaidReady(status.raid.rpl_id);
+          return sendJson(response, 200, { ready: true });
+        } catch (error) {
+          if (!(error instanceof CliCommandError) || error.exitCode !== 9) throw error;
+          try {
+            const details = await activeAdapter.listRaidPlayers(status.raid.rpl_id);
+            const me = details.players?.find((player) => player.isMe);
+            if (me?.ready === 1) return sendJson(response, 200, { ready: true, reconciled: true });
+            if (me?.ready === 0) {
+              return sendJson(response, 409, {
+                code: 'READY_NOT_CONFIRMED',
+                retryAllowed: true,
+                message: 'Redo-anropet kunde inte bekräftas och spelarlistan visar att du inte är redo.'
+              });
+            }
+          } catch {
+            // Preserve the unknown write outcome below when reconciliation cannot be read safely.
+          }
+          return sendJson(response, 409, {
+            code: 'READY_OUTCOME_UNKNOWN',
+            retryAllowed: false,
+            message: 'Resultatet av Redo-anropet är osäkert. Knappen förblir avstängd tills sidan kan bekräfta din status.'
+          });
+        }
       }
       if (request.method === 'POST' && url.pathname === '/api/active-raid/leave') {
         if (restoreLocked) return sendJson(response, 409, { message: restoreFailure.error });

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const rootUrl = new URL('../', import.meta.url);
-const cliRef = 'c79c49f5e0a24a2f17ae450ba8a5da5a795f5142';
+const cliRef = '4b8144c17f7e67224b6e3c5560c49a3463aff383';
 
 test('container builds and verifies the exact pinned Raid NOW CLI source', async () => {
   const dockerfile = await readFile(new URL('Dockerfile', rootUrl), 'utf8');

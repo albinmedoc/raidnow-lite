@@ -50,8 +50,8 @@ test('PWA manifest and HTML expose installable Swedish metadata and local icons'
 
 test('service worker caches only an explicit shell and bypasses APIs, SSE, mutations, and external images', async () => {
   const source = await asset('service-worker.js');
-  assert.match(source, /raidnow-shell-v10/);
-  assert.doesNotMatch(source, /raidnow-shell-v9/);
+  assert.match(source, /raidnow-shell-v11/);
+  assert.doesNotMatch(source, /raidnow-shell-v10/);
   assert.match(source, /const SHELL_ASSETS = \[/);
   assert.match(source, /request\.method !== 'GET'/);
   assert.match(source, /url\.origin !== self\.location\.origin/);
@@ -154,6 +154,7 @@ test('browser UI is anonymous-only and keeps raid-load errors visible without cr
 test('browser copy control exposes a selectable grouped code and safe fallback', async () => {
   const [html, source] = await Promise.all([asset('index.html'), asset('app.js')]);
   assert.match(html, /id="activeRaidCode"/);
+  assert.match(html, />Hostens trainer code</);
   assert.match(html, /class="trainer-code"/);
   assert.match(source, /qr\?\.grouped/);
   assert.match(source, /const button = event\.currentTarget;/);
@@ -170,6 +171,8 @@ test('matched raid UI keeps copy and exposes an accessible local QR dialog', asy
     asset('ui-helpers.js')
   ]);
   assert.match(html, /id="copyCode"/);
+  assert.match(html, /id="readyRaid"/);
+  assert.match(html, />Redo</);
   assert.match(html, /id="showQrCode"/);
   assert.match(html, />Visa QR-kod</);
   assert.match(html, /<dialog id="trainerCodeQrDialog"/);
@@ -185,6 +188,9 @@ test('matched raid UI keeps copy and exposes an accessible local QR dialog', asy
   assert.match(source, /formatRaidRating/);
   assert.match(helpers, /Raid NOW-rating/);
   assert.match(source, /setHostTrainerCode\(details\.raid\.rpl_code\)/);
+  assert.match(source, /\/api\/active-raid\/ready/);
+  assert.match(source, /error\.data\?\.retryAllowed === false/);
+  assert.match(source, /readyRaid/);
   assert.match(source, /setHostTrainerCode\(status\.raid\.rpl_code\)/);
   assert.match(source, /setHostTrainerCode\(null\)/);
   assert.doesNotMatch(source, /state\.profile\.trainerCode[^\n]*createTrainerCodeQr/);

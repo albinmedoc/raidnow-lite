@@ -243,6 +243,15 @@ export class CliRaidNowAdapter {
     };
   }
 
+  async markRaidReady(id, { signal } = {}) {
+    this.#assertWritesAllowed();
+    const data = await this.#run([
+      'raid', 'ready', '--raid-id', String(id)
+    ], { signal });
+    this.#assertObject(data);
+    return { status: 'success' };
+  }
+
   async leaveRaid(id, { signal } = {}) {
     this.#assertWritesAllowed();
     const data = await this.#run([

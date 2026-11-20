@@ -288,6 +288,8 @@ async function loadActiveRaid() {
     $('#activeRaidCount').textContent = String(details.count ?? details.players.length);
     $('#activeRaidReady').textContent = `${details.readyCount ?? 0}/${details.count ?? details.players.length}`;
     $('#activeRaidMeta').textContent = `Uppdaterad ${formatTime(details.fetchedAt)}`;
+    const me = details.players.find((player) => player.isMe);
+    $('#readyRaid').disabled = !me || me.ready === 1;
     setHostTrainerCode(details.raid.rpl_code);
     const list = $('#activeRaidPlayers');
     list.replaceChildren();
@@ -373,6 +375,7 @@ function renderStatus(status) {
   $('#statusCard').classList.toggle('hidden', !showSearchStatus);
   $('#abandonSearch').classList.toggle('hidden', !status.canAbandonLocal);
   $('#matchedPanel').classList.toggle('hidden', !matched);
+  $('#readyRaid').disabled = true;
   updateActiveRaidPolling(matched);
   if (matched) {
     $('#matchedBoss').textContent = bossName(status.raid.rpl_pokemon);
@@ -451,6 +454,18 @@ $('#abandonSearch').addEventListener('click', async () => {
   } catch (error) {
     $('#searchMessage').className = 'form-message search-message error';
     $('#searchMessage').textContent = error.message;
+  }
+});
+
+$('#readyRaid').addEventListener('click', async () => {
+  const button = $('#readyRaid');
+  button.disabled = true;
+  try {
+    await api('/api/active-raid/ready', { method: 'POST', body: '{}' });
+    await loadActiveRaid();
+  } catch (error) {
+    $('#activeRaidMeta').textContent = `Kunde inte markera dig som redo: ${error.message}`;
+    button.disabled = error.data?.retryAllowed === false;
   }
 });
 

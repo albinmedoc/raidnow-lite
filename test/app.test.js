@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createApp } from '../src/app.js';
 import { MockRaidNowAdapter } from '../src/adapters/mock-raidnow-adapter.js';
+import { CliCommandError } from '../src/adapters/cli-process-runner.js';
 
 async function startTestApp(adapter, options = {}) {
   let state = { profile: {}, preferences: {}, autoJoin: null };
@@ -420,7 +421,90 @@ test('restore-locked sessions expose a generic status and reject destructive lif
   }
 });
 
-test('returns active raid players and lets the guest leave', async () => {
+test('refreshes exact raid details so direct matches expose the host trainer code and QR payload', async () => {
+  let exactLookups = 0;
+  const adapter = {
+    async createMatching() { return { status: 'success' }; },
+    async listRaidsForSelection() {
+      return [{ rpl_id: 'direct-raid', rpl_rank: '5', rpl_pokemon: 'Giratina', rpl_tid: 'HostOne' }];
+    },
+    async joinRaidFast() { return { status: 'success' }; },
+    async findRaid() {
+      exactLookups += 1;
+      return { rpl_id: 'direct-raid', rpl_pokemon: 'Giratina', rpl_tid: 'HostOne', rpl_code: '999988887777' };
+    },
+    async listRaidPlayers() { return { players: [], count: 1, readyCount: 0 }; }
+  };
+  const app = await startTestApp(adapter);
+  try {
+    await fetch(`${app.baseUrl}/api/profile`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ trainerName: 'Albin123', trainerCode: '123456789012', level: 50, countryCode: 'se' }) });
+    await fetch(`${app.baseUrl}/api/autojoin/start`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ranks: ['5'], pokemon: ['Giratina'], strategy: 'hybrid' }) });
+    for (let attempt = 0; attempt < 50 && app.worker.status().state !== 'matched'; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(app.worker.status().state, 'matched');
+    const details = await fetch(`${app.baseUrl}/api/active-raid`).then((response) => response.json());
+    assert.equal(details.raid.rpl_code, '999988887777');
+    assert.ok(exactLookups >= 1);
+  } finally { await close(app); }
+});
+
+test('active raid player refresh survives an exact-detail lookup failure', async () => {
+  const adapter = {
+    async createMatching() { return { status: 'success' }; },
+    async listRaidsForSelection() {
+      return [{ rpl_id: 'raid-1', rpl_rank: '5', rpl_pokemon: 'Giratina', rpl_tid: 'HostOne' }];
+    },
+    async joinRaidFast() { return { status: 'success' }; },
+    async findRaid() { throw new Error('Exact lookup failed.'); },
+    async listRaidPlayers() { return { players: [{ trainerName: 'PlayerOne', level: 50, isMe: true }], count: 1, readyCount: 0 }; }
+  };
+  const app = await startTestApp(adapter);
+  try {
+    await fetch(`${app.baseUrl}/api/profile`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ trainerName: 'Albin123', trainerCode: '123456789012', level: 50, countryCode: 'se' }) });
+    await fetch(`${app.baseUrl}/api/autojoin/start`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ranks: ['5'], pokemon: ['Giratina'] }) });
+    for (let attempt = 0; attempt < 50 && app.worker.status().state !== 'matched'; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    const response = await fetch(`${app.baseUrl}/api/active-raid`);
+    assert.equal(response.status, 200);
+    const details = await response.json();
+    assert.equal(details.players[0].trainerName, 'PlayerOne');
+  } finally { await close(app); }
+});
+
+test('reconciles an unknown ready write before allowing another attempt', async (t) => {
+  for (const scenario of [
+    { name: 'already ready', players: [{ isMe: true, ready: 1 }], status: 200, body: { ready: true, reconciled: true } },
+    { name: 'definitively not ready', players: [{ isMe: true, ready: 0 }], status: 409, body: { code: 'READY_NOT_CONFIRMED', retryAllowed: true } },
+    { name: 'guest missing from reconciliation read', players: [], status: 409, body: { code: 'READY_OUTCOME_UNKNOWN', retryAllowed: false } }
+  ]) {
+    await t.test(scenario.name, async () => {
+      const adapter = {
+        async createMatching() { return { status: 'success' }; },
+        async listRaidsForSelection() { return [{ rpl_id: 'raid-1', rpl_rank: '5', rpl_pokemon: 'Giratina', rpl_tid: 'HostOne' }]; },
+        async joinRaidFast() { return { status: 'success' }; },
+        async markRaidReady() {
+          throw new CliCommandError({ code: 'WRITE_OUTCOME_UNKNOWN', exitCode: 9, command: 'raid ready', status: 'failed', message: 'Write outcome is unknown.' });
+        },
+        async listRaidPlayers() { return { players: scenario.players, count: scenario.players.length, readyCount: scenario.players.filter((player) => player.ready).length }; }
+      };
+      const app = await startTestApp(adapter);
+      try {
+        await fetch(`${app.baseUrl}/api/profile`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ trainerName: 'Albin123', trainerCode: '123456789012', level: 50, countryCode: 'se' }) });
+        await fetch(`${app.baseUrl}/api/autojoin/start`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ranks: ['5'], pokemon: ['Giratina'] }) });
+        for (let attempt = 0; attempt < 50 && app.worker.status().state !== 'matched'; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+        const response = await fetch(`${app.baseUrl}/api/active-raid/ready`, { method: 'POST' });
+        assert.equal(response.status, scenario.status);
+        const body = await response.json();
+        for (const [key, value] of Object.entries(scenario.body)) assert.equal(body[key], value);
+      } finally { await close(app); }
+    });
+  }
+});
+
+test('returns active raid players, marks the guest ready, and lets the guest leave', async () => {
+  let readyId = null;
   let leftId = null;
   const adapter = {
     async listRaids() { return []; },
@@ -430,6 +514,7 @@ test('returns active raid players and lets the guest leave', async () => {
     async pollMatching() { return { status: 'success', rpllm_status: 2, rpllm_rpl_id: 'raid-1' }; },
     async findRaid() { return { rpl_id: 'raid-1', rpl_pokemon: 'Giratina', rpl_tid: 'HostOne', rpl_code: '999988887777' }; },
     async listRaidPlayers() { return { players: [{ trainerName: 'PlayerOne', level: 50, isMe: true }], count: 1, readyCount: 0 }; },
+    async markRaidReady(id) { readyId = id; return { status: 'success' }; },
     async leaveRaid(id) { leftId = id; return { status: 'success' }; }
   };
   const app = await startTestApp(adapter);
@@ -442,6 +527,11 @@ test('returns active raid players and lets the guest leave', async () => {
     const details = await active.json();
     assert.equal(details.raid.rpl_tid, 'HostOne');
     assert.equal(details.players[0].trainerName, 'PlayerOne');
+
+    const ready = await fetch(`${app.baseUrl}/api/active-raid/ready`, { method: 'POST' });
+    assert.equal(ready.status, 200);
+    assert.equal(readyId, 'raid-1');
+    assert.deepEqual(await ready.json(), { ready: true });
 
     const left = await fetch(`${app.baseUrl}/api/active-raid/leave`, { method: 'POST' });
     assert.equal(left.status, 200);

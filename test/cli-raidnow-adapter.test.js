@@ -68,6 +68,7 @@ test('blocks every write locally by default without invoking the runner', async 
     () => adapter.createMatching({ profile, selection }),
     () => adapter.joinRaidFast('raid-1', profile),
     () => adapter.cancelMatching(),
+    () => adapter.markRaidReady('raid-1'),
     () => adapter.leaveRaid('raid-1')
   ];
   for (const invoke of writes) {
@@ -131,6 +132,7 @@ test('maps every worker operation to the primitive CLI command', async () => {
     success('queue cancel', { requested: true, verified: false }, 'requested'),
     success('raid get', raid, 'found'),
     success('raid players', players, 'listed'),
+    success('raid ready', { ready: true, raidId: 'raid-9' }, 'ready'),
     success('raid leave', { requested: true, verified: false, raidId: 'raid-9' }, 'requested')
   ]);
 
@@ -152,6 +154,7 @@ test('maps every worker operation to the primitive CLI command', async () => {
     readyCount: 1,
     raidDeleted: false
   });
+  assert.deepEqual(await adapter.markRaidReady('raid-9', { signal }), { status: 'success' });
   assert.deepEqual(await adapter.leaveRaid('raid-9', { signal }), { status: 'success' });
 
   const expected = [
@@ -163,6 +166,7 @@ test('maps every worker operation to the primitive CLI command', async () => {
     ['queue', 'cancel', '--verify=false'],
     ['raid', 'get', '--raid-id', 'raid-9'],
     ['raid', 'players', '--raid-id', 'raid-9'],
+    ['raid', 'ready', '--raid-id', 'raid-9'],
     ['raid', 'leave', '--raid-id', 'raid-9', '--verify=false']
   ];
   expected.forEach((tail, index) => assertCall(runner.calls[index], tail, {
