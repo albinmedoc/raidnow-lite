@@ -22,6 +22,18 @@ function message(error) {
   return error?.message || String(error);
 }
 
+function writeFailureOutcome(error) {
+  if (!(error instanceof CliCommandError)) return 'unknown';
+  if (error.exitCode === 8) return 'not-dispatched';
+  if ([2, 3, 4, 5, 6, 7].includes(error.exitCode)) return 'definite';
+  return 'unknown';
+}
+
+function retryableLobbyJoin(error) {
+  if (!(error instanceof CliCommandError) || error.code !== 'UPSTREAM_REJECTION' || error.exitCode !== 7) return false;
+  return /maximum number of participants has been exceeded|\blobby is full\b/i.test(message(error));
+}
+
 function diagnosticMessage(error, operation) {
   let value = message(error).replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 512);
   const trainerCode = operation.input?.profile?.trainerCode;
@@ -254,12 +266,17 @@ export class AutoJoinWorker extends EventEmitter {
       .catch((error) => {
         if (!this.#running) return;
         this.#recordDiagnostic(operation, 'rejected', error, startedAt);
+        const writeOutcome = writeFailureOutcome(error);
+        const definite = !WRITE_OPERATIONS.has(operation.kind)
+          || writeOutcome === 'definite'
+          || writeOutcome === 'not-dispatched';
         return this.#dispatch({
           type: 'operationRejected',
           opId,
           error: message(error),
           status: error?.status,
-          definite: !['createQueue', 'cancelQueue', 'joinRaid', 'leaveRaid'].includes(operation.kind)
+          definite,
+          retryableLobbyJoin: operation.kind === 'joinRaid' && definite && retryableLobbyJoin(error)
         });
       })
       .catch((error) => this.emit('workerError', error))
@@ -288,10 +305,7 @@ export class AutoJoinWorker extends EventEmitter {
       event.message = diagnosticMessage(error, operation);
     }
     if (WRITE_OPERATIONS.has(operation.kind)) {
-      if (result === 'succeeded') event.writeOutcome = 'confirmed';
-      else if (error instanceof CliCommandError && error.exitCode === 8) event.writeOutcome = 'not-dispatched';
-      else if (error instanceof CliCommandError && [2, 3, 4, 5, 6, 7].includes(error.exitCode)) event.writeOutcome = 'definite';
-      else event.writeOutcome = 'unknown';
+      event.writeOutcome = result === 'succeeded' ? 'confirmed' : writeFailureOutcome(error);
     }
     if (['joinRaid', 'leaveRaid', 'verifyMembership', 'verifyMatched'].includes(operation.kind)) {
       event.raidId = String(operation.input?.raidId ?? '');

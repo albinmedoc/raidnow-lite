@@ -160,6 +160,67 @@ test('diagnostics report a rejected raid join without dumping its private input'
   worker.shutdown();
 });
 
+test('full lobby rejection silently resumes lobby scanning while Auto Join remains active', async () => {
+  const clock = new FakeClock();
+  let lobbyScans = 0;
+  let joins = 0;
+  const rejection = new CliCommandError({
+    message: 'Upstream avvisade begäran: The maximum number of participants has been exceeded. Use Auto join.',
+    code: 'UPSTREAM_REJECTION',
+    exitCode: 7,
+    command: 'raid join',
+    status: 'rejected'
+  });
+  const worker = new AutoJoinWorker({
+    adapter: {
+      async createMatching() { return { status: 'success' }; },
+      async listRaidsForSelection() {
+        lobbyScans += 1;
+        return [{ rpl_id: 'full-raid', rpl_rank: '5', rpl_pokemon: 'Giratina' }];
+      },
+      async joinRaidFast() {
+        joins += 1;
+        throw rejection;
+      }
+    },
+    pollIntervalMs: 100,
+    scanIntervalMs: 100,
+    clock
+  });
+
+  await worker.start({ profile, selection: { ...selection, strategy: 'hybrid' } });
+  await waitFor(worker, (status) => status.nextPollAt !== null);
+  await clock.tick(0);
+  await waitFor(worker, () => joins === 1 && worker.status().nextPollAt !== null);
+  assert.equal(worker.status().state, 'searching');
+  assert.equal(worker.status().error, null);
+  await clock.tick(100);
+  await waitFor(worker, () => lobbyScans === 2);
+  assert.equal(joins, 1);
+  worker.shutdown();
+});
+
+test('a not-dispatched queue write fails safely without reconciliation', async () => {
+  const rejection = new CliCommandError({
+    message: 'Request was not dispatched.',
+    code: 'READ_NETWORK_ERROR',
+    exitCode: 8,
+    command: 'queue join',
+    status: 'not-dispatched'
+  });
+  const worker = new AutoJoinWorker({
+    adapter: {
+      async createMatching() { throw rejection; }
+    }
+  });
+
+  await worker.start({ profile, selection });
+  await waitFor(worker, (status) => status.state === 'error');
+  assert.equal(worker.status().nextRetryAt, null);
+  assert.equal(worker.status().queueCancelPending, false);
+  worker.shutdown();
+});
+
 test('diagnostics classify an untyped write failure as unknown', async () => {
   const diagnostics = [];
   const worker = new AutoJoinWorker({

@@ -572,6 +572,30 @@ test('direct scanning respects the different-country filter', () => {
   assert.equal(result.operation.input.raidId, 'different');
 });
 
+test('retryable full-lobby rejection resumes scanning without showing an error', () => {
+  const joining = {
+    ...initialSnapshot(), intent: 'search',
+    search: { profile, selection: { ...selection, strategy: 'hybrid' }, nextQueuePollAt: null, attemptedRaids: { 'raid-1': now } },
+    raid: { state: 'joining', target: 'raid-1', value: { rpl_id: 'raid-1' } },
+    operation: { opId: 'join-1', kind: 'joinRaid', input: { raidId: 'raid-1' }, startedAt: now, attempt: 1 },
+    lastError: 'old error',
+    retryCount: 2
+  };
+  const rejected = reduce(joining, {
+    type: 'operationRejected',
+    opId: 'join-1',
+    error: 'Upstream avvisade begäran: The maximum number of participants has been exceeded. Use Auto join.',
+    definite: true,
+    retryableLobbyJoin: true
+  }).snapshot;
+  assert.equal(rejected.raid.state, 'none');
+  assert.equal(rejected.operation, null);
+  assert.equal(rejected.search.attemptedRaids['raid-1'], now);
+  assert.equal(rejected.lastError, null);
+  assert.equal(rejected.retryCount, 0);
+  assert.equal(rejected.wake.kind, 'scan');
+});
+
 test('definite join rejection removes the candidate attempt immediately', () => {
   const joining = {
     ...initialSnapshot(), intent: 'search',

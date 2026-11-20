@@ -315,6 +315,18 @@ export function reduceAutoJoin(current, event, config) {
     }
     if (kind === 'joinRaid') {
       if (!event.definite) return withWake({ ...snapshot, raid: { ...snapshot.raid, state: 'unknown' }, operation: null, lastError: message }, 'reconcileRaid', now, pollIntervalMs);
+      if (event.retryableLobbyJoin) {
+        const next = {
+          ...snapshot,
+          raid: { state: 'none', target: null, value: null },
+          operation: null,
+          lastContactAt: now,
+          lastError: null,
+          retryCount: 0
+        };
+        if (next.intent === 'stop') return beginQueueCleanup(next, now, matchedValidationIntervalMs);
+        return withWake(next, 'scan', now, scanIntervalMs);
+      }
       const next = { ...snapshot, raid: { state: 'none', target: null, value: null }, operation: null, lastError: message };
       if (next.search?.attemptedRaids && snapshot.raid.target) delete next.search.attemptedRaids[String(snapshot.raid.target)];
       if (next.intent === 'stop') return beginQueueCleanup(next, now, matchedValidationIntervalMs);
