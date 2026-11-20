@@ -221,6 +221,10 @@ Build the container locally:
 docker build -t raidnow-lite:local .
 ```
 
+### Pinned CLI in the container
+
+The Lite image builds `raidnow` from the exact source commit pinned by `RAIDNOW_CLI_REF` in the `Dockerfile`; it does not download a release binary. To bump the CLI, edit that single `ARG`, then run `npm test` and build/run the container to verify `raidnow --json version` reports the new commit.
+
 Run it in demo mode:
 
 ```bash

@@ -55,6 +55,14 @@ jobs:
         shell: bash
         run: |
           docker run -d --name raidnow-lite-ci -p 4173:4173 raidnow-lite:ci
+          trap 'docker rm -f raidnow-lite-ci >/dev/null 2>&1 || true' EXIT
+
+          expected_ref="$(sed -n 's/^ARG RAIDNOW_CLI_REF=//p' Dockerfile)"
+          test -n "$expected_ref"
+          expected="{\"schemaVersion\":1,\"ok\":true,\"command\":\"version\",\"status\":\"shown\",\"data\":{\"version\":\"${expected_ref}\"},\"warnings\":[]}"
+          actual="$(docker exec raidnow-lite-ci raidnow --json version)"
+          test "$actual" = "$expected"
+
           for attempt in {1..20}; do
             if curl --fail --silent http://127.0.0.1:4173/api/health | grep -q '"ok":true'; then
               exit 0
