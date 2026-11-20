@@ -145,26 +145,6 @@
     </div>
   </dialog>
 
-  <dialog id="connectionDialog" class="modal">
-    <form method="dialog" class="modal-header"><div><p class="eyebrow">ANSLUTNING</p><h2>Återställ Raid NOW-session</h2></div><button class="modal-close secondary" value="cancel" aria-label="Stäng">Stäng</button></form>
-    <p class="muted">Raid NOW Lite fungerar normalt anonymt utan konto eller token. Alternativen nedan är endast för avancerad återställning efter ett verkligt sessionsfel.</p>
-    <details id="sessionPanel">
-      <summary>Diagnostik: importera en befintlig session-token</summary>
-      <form id="sessionForm" class="form-grid">
-        <label class="wide">Befintlig session-token<input name="token" type="password" autocomplete="off" required></label>
-        <div class="wide"><button class="primary" type="submit">Importera token</button><span id="sessionMessage" class="form-message"></span></div>
-      </form>
-    </details>
-    <details id="loginPanel" class="profile-spacing">
-      <summary>Alternativ: logga in med konto</summary>
-      <form id="loginForm" class="form-grid">
-        <label class="wide">E-post<input name="email" type="email" autocomplete="username" required></label>
-        <label class="wide">Lösenord<input name="password" type="password" autocomplete="current-password" required></label>
-        <div class="wide"><button class="primary" type="submit">Logga in</button><span id="loginMessage" class="form-message"></span></div>
-      </form>
-    </details>
-  </dialog>
-
   <footer>Raid NOW Lite · sökningen fortsätter även när sidan är stängd</footer>
   <script type="module" src="/app.js"></script>
 </body>

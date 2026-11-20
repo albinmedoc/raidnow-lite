@@ -65,7 +65,7 @@ async function readJson(request, maxBodyBytes) {
   }
 }
 
-export function createApp({ adapter, store, sessionManager = null, pushNotifier = null, pollIntervalMs = 15_000, scanIntervalMs = 1_000, publicDir, mode = 'demo', liveWrites = false, logger = console, maxBodyBytes = DEFAULT_MAX_BODY_BYTES, mutationLimit = DEFAULT_MUTATION_LIMIT, mutationWindowMs = DEFAULT_MUTATION_WINDOW_MS, sseHeartbeatMs = DEFAULT_SSE_HEARTBEAT_MS, now = Date.now }) {
+export function createApp({ adapter, store, sessionManager = null, pushNotifier = null, pollIntervalMs = 15_000, scanIntervalMs = 1_000, publicDir, mode = 'demo', liveWrites = false, anonymousOnly = false, logger = console, maxBodyBytes = DEFAULT_MAX_BODY_BYTES, mutationLimit = DEFAULT_MUTATION_LIMIT, mutationWindowMs = DEFAULT_MUTATION_WINDOW_MS, sseHeartbeatMs = DEFAULT_SSE_HEARTBEAT_MS, now = Date.now }) {
   const defaultWorker = sessionManager ? null : new AutoJoinWorker({
     adapter,
     pollIntervalMs,
@@ -155,6 +155,9 @@ export function createApp({ adapter, store, sessionManager = null, pushNotifier 
         response.setHeader('Allow', [...allowedMethods].join(', '));
         return sendJson(response, 405, { message: 'Method not allowed.' });
       }
+      if (anonymousOnly && request.method === 'POST' && ['/api/login', '/api/session/import'].includes(url.pathname)) {
+        return sendJson(response, 404, { message: 'Not found.' });
+      }
 
       context = sessionManager
         ? await sessionManager.resolve(request, response, { lease: true })
@@ -207,7 +210,7 @@ export function createApp({ adapter, store, sessionManager = null, pushNotifier 
         return sendJson(response, 200, { connected: true });
       }
       if (request.method === 'GET' && url.pathname === '/api/config') {
-        return sendJson(response, 200, { mode, liveWrites, pollIntervalMs, loggedIn: activeAdapter.hasToken ? activeAdapter.hasToken() : true });
+        return sendJson(response, 200, { mode, liveWrites, anonymousOnly, pollIntervalMs, loggedIn: activeAdapter.hasToken ? activeAdapter.hasToken() : true });
       }
       if (request.method === 'PUT' && url.pathname === '/api/profile') {
         if (restoreLocked) return sendJson(response, 409, { message: restoreFailure.error });

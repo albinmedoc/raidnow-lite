@@ -66,6 +66,7 @@ const app = createApp({
   publicDir: resolve(root, 'public'),
   mode,
   liveWrites,
+  anonymousOnly: mode === 'live',
   maxBodyBytes,
   mutationLimit,
   mutationWindowMs,

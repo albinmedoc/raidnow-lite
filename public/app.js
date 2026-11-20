@@ -244,7 +244,6 @@ async function loadRaids({ dismissStaleWarning = false } = {}) {
     renderSelectionDetail(reconciliation);
   } catch (error) {
     $('#raidUpdated').textContent = `Kunde inte hämta raider: ${error.message}`;
-    if (error.status === 401 || /session|log in/i.test(error.data?.message || '')) $('#connectionDialog').showModal();
   }
 }
 
@@ -401,35 +400,6 @@ async function loadProfile() {
   updateProfileLabel();
   updateControls();
 }
-
-$('#sessionForm').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  const message = $('#sessionMessage'); const form = event.currentTarget;
-  message.className = 'form-message'; message.textContent = 'Ansluter…';
-  try {
-    await api('/api/session/import', { method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(form))) });
-    form.elements.token.value = ''; state.config.loggedIn = true; message.textContent = 'Anonym session ansluten.';
-    $('#connectionDialog').close(); await loadRaids();
-  } catch (error) {
-    form.elements.token.value = ''; message.className = 'form-message error'; message.textContent = error.message;
-  }
-});
-
-$('#loginForm').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  const message = $('#loginMessage'); const form = event.currentTarget;
-  message.className = 'form-message'; message.textContent = 'Loggar in…';
-  try {
-    const result = await api('/api/login', { method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(form))) });
-    state.profile = saveLocalProfile(localStorage, result.profile); state.config.loggedIn = true;
-    const profileForm = $('#profileForm');
-    for (const [key, value] of Object.entries(state.profile)) if (profileForm.elements[key]) profileForm.elements[key].value = value;
-    updateProfileLabel(); form.elements.password.value = ''; message.textContent = 'Inloggad.';
-    $('#connectionDialog').close(); await loadRaids();
-  } catch (error) {
-    form.elements.password.value = ''; message.className = 'form-message error'; message.textContent = error.message;
-  }
-});
 
 $('#profileForm').addEventListener('submit', async (event) => {
   event.preventDefault();

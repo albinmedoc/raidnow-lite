@@ -50,7 +50,8 @@ test('PWA manifest and HTML expose installable Swedish metadata and local icons'
 
 test('service worker caches only an explicit shell and bypasses APIs, SSE, mutations, and external images', async () => {
   const source = await asset('service-worker.js');
-  assert.match(source, /raidnow-shell-v9/);
+  assert.match(source, /raidnow-shell-v10/);
+  assert.doesNotMatch(source, /raidnow-shell-v9/);
   assert.match(source, /const SHELL_ASSETS = \[/);
   assert.match(source, /request\.method !== 'GET'/);
   assert.match(source, /url\.origin !== self\.location\.origin/);
@@ -131,7 +132,7 @@ test('browser app loads the full catalog and owns selection/reset lifecycle loca
   assert.match(source, /events\.close\(\)/);
 });
 
-test('live startup loads raids anonymously and only opens recovery after an upstream session error', async () => {
+test('browser UI is anonymous-only and keeps raid-load errors visible without credential recovery', async () => {
   const [html, source, serverSource] = await Promise.all([
     asset('index.html'),
     asset('app.js'),
@@ -139,12 +140,15 @@ test('live startup loads raids anonymously and only opens recovery after an upst
   ]);
   const init = source.slice(source.indexOf('async function init()'));
   assert.match(init, /await loadProfile\(\);\s*await loadRaids\(\);/);
-  assert.doesNotMatch(init, /config\.loggedIn[^\n]*loadRaids|connectionDialog[^\n]*showModal/);
-  assert.match(source, /error\.status === 401[^\n]*connectionDialog[^\n]*showModal/);
+  assert.match(source, /Kunde inte hämta raider:/);
   assert.doesNotMatch(serverSource, /hasToken[^\n]*return sendJson\(response, 401/);
   assert.doesNotMatch(html, /copy\(document\.querySelector/);
-  assert.match(html, /<details[^>]*id="sessionPanel"/);
-  assert.match(html, /diagnostik|avancerad återställning/i);
+  for (const forbidden of ['connectionDialog', 'sessionForm', 'loginForm', '/api/login', '/api/session/import']) {
+    assert.equal(html.includes(forbidden), false);
+    assert.equal(source.includes(forbidden), false);
+  }
+  assert.doesNotMatch(source, /showModal\(\)[^\n]*(session|login)|connectionDialog[^\n]*showModal/i);
+  assert.doesNotMatch(`${html}\n${source}`, /session-token|befintlig session-token|logga in med konto|lösenord|avancerad återställning/i);
 });
 
 test('browser copy control exposes a selectable grouped code and safe fallback', async () => {

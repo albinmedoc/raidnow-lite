@@ -12,6 +12,7 @@ test('server wires one per-session CLI token adapter in live mode', () => {
   assert.match(source, /adapterFactory:\s*async\s*\(\{\s*sessionKey\s*\}\)/);
   assert.match(source, /`\$\{sessionKey\}\.token`/);
   assert.match(source, /allowWrites:\s*liveWrites/);
+  assert.match(source, /anonymousOnly:\s*mode\s*===\s*'live'/);
   assert.doesNotMatch(source, /\bRaidNowAdapter\b/);
   assert.doesNotMatch(source, /RAIDNOW_TOKEN|RAIDNOW_CSRF_TOKEN/);
 });

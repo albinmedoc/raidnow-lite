@@ -91,6 +91,58 @@ test('imports an anonymous Raid NOW token without echoing it', async () => {
   } finally { await close(app); }
 });
 
+test('anonymous-only mode advertises its API policy', async () => {
+  const app = await startTestApp({ async listRaids() { return []; } }, { anonymousOnly: true });
+  try {
+    const response = await fetch(`${app.baseUrl}/api/config`);
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).anonymousOnly, true);
+  } finally { await close(app); }
+});
+
+test('anonymous-only mode hides login and token import before parsing request bodies', async () => {
+  let loginCalls = 0;
+  let importCalls = 0;
+  let state = { profile: {}, autoJoin: null, account: { token: 'existing-token', email: 'existing@example.com' } };
+  const store = {
+    get() { return structuredClone(state); },
+    async update(patch) { state = { ...state, ...patch }; return this.get(); }
+  };
+  const app = createApp({
+    adapter: {
+      async login() { loginCalls += 1; return { status: 'success', token: 'replacement-token' }; },
+      setToken() { importCalls += 1; }
+    },
+    store,
+    anonymousOnly: true,
+    maxBodyBytes: 8,
+    publicDir: new URL('../public/', import.meta.url)
+  });
+  await app.ready;
+  await new Promise((resolve) => app.server.listen(0, '127.0.0.1', resolve));
+  const baseUrl = `http://127.0.0.1:${app.server.address().port}`;
+  try {
+    const responses = await Promise.all([
+      fetch(`${baseUrl}/api/login`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: '{malformed'
+      }),
+      fetch(`${baseUrl}/api/session/import`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token: 'oversize-token' })
+      })
+    ]);
+    for (const response of responses) {
+      assert.equal(response.status, 404);
+      assert.deepEqual(await response.json(), { message: 'Not found.' });
+    }
+    assert.equal(loginCalls, 0);
+    assert.equal(importCalls, 0);
+    assert.deepEqual(state.account, { token: 'existing-token', email: 'existing@example.com' });
+  } finally {
+    app.worker.shutdown();
+    await new Promise((resolve) => app.server.close(resolve));
+  }
+});
+
 test('rejects invalid profiles without saving them', async () => {
   const app = await startTestApp({ async listRaids() { return []; } });
   try {
