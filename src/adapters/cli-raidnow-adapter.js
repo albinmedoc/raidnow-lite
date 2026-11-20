@@ -11,6 +11,10 @@ function protocolError() {
   return new CliRunnerError('CLI_PROTOCOL_ERROR', 'The CLI returned an invalid response.');
 }
 
+function writesDisabled() {
+  return new CliRunnerError('WRITES_DISABLED', 'Live writes are disabled.');
+}
+
 function isObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -65,21 +69,24 @@ function legacyRaid(raid, { exact = false } = {}) {
 export class CliRaidNowAdapter {
   #runner;
   #tokenFile;
+  #allowWrites;
   #currentBosses = [];
   #currentBossesAt = 0;
 
-  constructor({ runner, tokenFile } = {}) {
+  constructor({ runner, tokenFile, allowWrites = false } = {}) {
     if (!runner || typeof runner.run !== 'function'
       || typeof tokenFile !== 'string' || tokenFile.trim().length === 0) {
       throw invalidInput();
     }
     this.#runner = runner;
     this.#tokenFile = tokenFile;
+    this.#allowWrites = Boolean(allowWrites);
   }
 
   hasToken() { return true; }
 
   async updateProfile(profile, { signal } = {}) {
+    this.#assertWritesAllowed();
     const data = await this.#run([
       'trainer', 'publish', ...trainerArgs(profile, { code: true })
     ], { stdin: profile?.trainerCode, signal });
@@ -145,6 +152,7 @@ export class CliRaidNowAdapter {
   }
 
   async joinRaidFast(raidId, profile, { signal } = {}) {
+    this.#assertWritesAllowed();
     const data = await this.#run([
       'raid', 'join', '--raid-id', String(raidId), ...trainerArgs(profile)
     ], { signal });
@@ -153,6 +161,7 @@ export class CliRaidNowAdapter {
   }
 
   async createMatching({ profile, selection }, { signal } = {}) {
+    this.#assertWritesAllowed();
     const data = await this.#run([
       'queue', 'join',
       ...repeatedArgs('--rank', selection?.ranks),
@@ -197,6 +206,7 @@ export class CliRaidNowAdapter {
   }
 
   async cancelMatching({ signal } = {}) {
+    this.#assertWritesAllowed();
     const data = await this.#run(['queue', 'cancel', '--verify=false'], { signal });
     this.#assertObject(data);
     return { status: 'success' };
@@ -234,6 +244,7 @@ export class CliRaidNowAdapter {
   }
 
   async leaveRaid(id, { signal } = {}) {
+    this.#assertWritesAllowed();
     const data = await this.#run([
       'raid', 'leave', '--raid-id', String(id), '--verify=false'
     ], { signal });
@@ -243,6 +254,10 @@ export class CliRaidNowAdapter {
 
   #assertObject(data) {
     if (!isObject(data)) throw protocolError();
+  }
+
+  #assertWritesAllowed() {
+    if (!this.#allowWrites) throw writesDisabled();
   }
 
   async #run(args, { stdin = null, signal } = {}) {

@@ -377,7 +377,7 @@ export function createApp({ adapter, store, sessionManager = null, pushNotifier 
         response.destroy();
         return;
       }
-      const status = error.status || ({ SESSION_CAPACITY: 503, SESSION_CONFLICT: 409, SESSION_RATE_LIMIT: 429 }[error.code]) || 500;
+      const status = error.status || ({ SESSION_CAPACITY: 503, SESSION_CONFLICT: 409, SESSION_RATE_LIMIT: 429, SESSION_SHUTTING_DOWN: 503 }[error.code]) || 500;
       if (status === 500) {
         try { logger?.error?.('Unexpected request failure.', { code: 'INTERNAL_ERROR' }); } catch {}
         sendJson(response, 500, { message: 'Ett internt fel uppstod.' });

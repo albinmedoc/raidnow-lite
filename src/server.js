@@ -4,7 +4,9 @@ import { createApp } from './app.js';
 import { AutoJoinWorker } from './core/autojoin-worker.js';
 import { SessionManager } from './core/session-manager.js';
 import { MockRaidNowAdapter } from './adapters/mock-raidnow-adapter.js';
-import { RaidNowAdapter } from './adapters/raidnow-adapter.js';
+import { CliProcessRunner } from './adapters/cli-process-runner.js';
+import { CliRaidNowAdapter } from './adapters/cli-raidnow-adapter.js';
+import { ensureSessionToken } from './adapters/session-token.js';
 import webPush from 'web-push';
 import { createPushNotifier, loadPushConfig } from './core/web-push.js';
 import { installGracefulShutdown } from './core/graceful-shutdown.js';
@@ -29,9 +31,13 @@ const sseHeartbeatMs = Number(process.env.RAIDNOW_SSE_HEARTBEAT_MS || 15_000);
 const shutdownTimeoutMs = Number(process.env.RAIDNOW_SHUTDOWN_TIMEOUT_MS || 10_000);
 const pushConfig = loadPushConfig(process.env);
 const pushNotifier = createPushNotifier({ config: pushConfig, webPush });
+const sessionRoot = resolve(root, 'data/sessions');
+const cliRunner = mode === 'live'
+  ? new CliProcessRunner({ executable: process.env.RAIDNOW_CLI_PATH || '/usr/local/bin/raidnow' })
+  : null;
 
 const sessionManager = new SessionManager({
-  rootDir: resolve(root, 'data/sessions'),
+  rootDir: sessionRoot,
   defaults: { profile: {}, account: null, autoJoin: null, pushSubscriptions: [], pushDeliveryJobs: [] },
   ttlMs: sessionTtlMs,
   maxContexts: maxSessionContexts,
@@ -39,9 +45,12 @@ const sessionManager = new SessionManager({
   globalSseLimit,
   cookieSecure,
   pushNotifier,
-  adapterFactory: ({ token }) => mode === 'live'
-    ? new RaidNowAdapter({ allowWrites: liveWrites, token: token || process.env.RAIDNOW_TOKEN || '', csrfToken: process.env.RAIDNOW_CSRF_TOKEN || '' })
-    : new MockRaidNowAdapter({ matchAfterPolls: 3 }),
+  adapterFactory: async ({ sessionKey }) => {
+    if (mode !== 'live') return new MockRaidNowAdapter({ matchAfterPolls: 3 });
+    const tokenFile = resolve(sessionRoot, `${sessionKey}.token`);
+    await ensureSessionToken({ runner: cliRunner, tokenFile });
+    return new CliRaidNowAdapter({ runner: cliRunner, tokenFile, allowWrites: liveWrites });
+  },
   workerFactory: ({ adapter, runOperation, persist }) => new AutoJoinWorker({
     adapter,
     runOperation,

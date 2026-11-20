@@ -40,7 +40,7 @@ class FakeRunner {
 
 function createAdapter(responses = []) {
   const runner = new FakeRunner(responses);
-  return { runner, adapter: new CliRaidNowAdapter({ runner, tokenFile }) };
+  return { runner, adapter: new CliRaidNowAdapter({ runner, tokenFile, allowWrites: true }) };
 }
 
 function assertCall(call, tail, { stdin = null, signal } = {}) {
@@ -58,6 +58,27 @@ test('validates the token file and reports an available token', () => {
     );
   }
   assert.equal(new CliRaidNowAdapter({ runner, tokenFile }).hasToken(), true);
+});
+
+test('blocks every write locally by default without invoking the runner', async () => {
+  const runner = new FakeRunner();
+  const adapter = new CliRaidNowAdapter({ runner, tokenFile });
+  const writes = [
+    () => adapter.updateProfile(profile),
+    () => adapter.createMatching({ profile, selection }),
+    () => adapter.joinRaidFast('raid-1', profile),
+    () => adapter.cancelMatching(),
+    () => adapter.leaveRaid('raid-1')
+  ];
+  for (const invoke of writes) {
+    await assert.rejects(
+      invoke,
+      (error) => error.code === 'WRITES_DISABLED'
+        && error.message === 'Live writes are disabled.'
+        && !error.message.includes(profile.trainerCode)
+    );
+  }
+  assert.equal(runner.calls.length, 0);
 });
 
 test('publishes a profile with the trainer code only on stdin', async () => {

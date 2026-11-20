@@ -9,6 +9,8 @@ const ACTIVE_STATES = new Set(['starting', 'searching', 'retrying', 'joining', '
 const LEGACY_RECOVERABLE_STATES = new Set(['starting', 'searching', 'retrying']);
 const SESSION_FILE = /^[a-f0-9]{64}\.json$/;
 const ATOMIC_TEMP_FILE = /^[a-f0-9]{64}\.json\.\d+\.tmp$/;
+const TOKEN_FILE = /^([a-f0-9]{64})\.token$/;
+const TOKEN_TEMP_FILE = /^([a-f0-9]{64})\.token\.\d+\.[a-f0-9]{16}\.tmp$/;
 const DEFAULT_STALE_TEMP_MS = 60 * 60 * 1_000;
 const DEFAULT_PUSH_RETRY_BASE_MS = 30_000;
 const DEFAULT_PUSH_RETRY_MAX_MS = 60 * 60 * 1_000;
@@ -37,6 +39,13 @@ export class SessionRateLimitError extends Error {
   constructor(message = 'Too many open event streams.') {
     super(message);
     this.code = 'SESSION_RATE_LIMIT';
+  }
+}
+
+export class SessionShuttingDownError extends Error {
+  constructor() {
+    super('Session manager is shutting down.');
+    this.code = 'SESSION_SHUTTING_DOWN';
   }
 }
 
@@ -164,6 +173,8 @@ export class SessionManager {
   #pushRetryBaseMs;
   #pushRetryMaxMs;
   #pushShutdownWaitMs;
+  #shuttingDown = false;
+  #shutdownPromise;
 
   constructor({
     rootDir,
@@ -218,7 +229,9 @@ export class SessionManager {
   }
 
   async resolve(request, response, { lease = false } = {}) {
+    this.#assertAccepting();
     await this.#initializePromise;
+    this.#assertAccepting();
     let id = cookieValue(request.headers?.cookie, COOKIE_NAME);
     if (!validSessionId(id)) {
       id = randomBytes(32).toString('base64url');
@@ -227,8 +240,10 @@ export class SessionManager {
     const key = sessionKey(id);
     while (true) {
       await this.#waitForRemoval(key);
+      this.#assertAccepting();
       const existing = this.#contexts.get(key) ?? this.#pendingContexts.get(key);
       const context = await (existing ?? this.#admit(key));
+      this.#assertAccepting();
       if (this.#contexts.get(key) !== context || context.removing || context.removed) {
         await this.#waitForRemoval(key);
         continue;
@@ -247,10 +262,13 @@ export class SessionManager {
 
   async #admit(key) {
     const decision = this.#admissionQueue.then(async () => {
+      this.#assertAccepting();
       await this.#waitForRemoval(key);
+      this.#assertAccepting();
       const existing = this.#contexts.get(key) ?? this.#pendingContexts.get(key);
       if (existing) return { context: existing };
       await this.cleanup();
+      this.#assertAccepting();
       while (this.#contexts.size + this.#pendingContexts.size >= this.#maxContexts) {
         const candidate = [...this.#contexts.values()]
           .filter((context) => !this.#isProtected(context))
@@ -269,6 +287,10 @@ export class SessionManager {
     if (removal) await removal;
   }
 
+  #assertAccepting() {
+    if (this.#shuttingDown) throw new SessionShuttingDownError();
+  }
+
   #cookie(value, maxAge) {
     return `${COOKIE_NAME}=${value}; Path=/; Max-Age=${maxAge}; HttpOnly; SameSite=Strict${this.#cookieSecure ? '; Secure' : ''}`;
   }
@@ -276,6 +298,7 @@ export class SessionManager {
   #getOrCreateContext(key, { startup = false } = {}) {
     if (this.#contexts.has(key)) return this.#contexts.get(key);
     if (this.#pendingContexts.has(key)) return this.#pendingContexts.get(key);
+    this.#assertAccepting();
     const pending = this.#createContext(key, { startup }).finally(() => this.#pendingContexts.delete(key));
     this.#pendingContexts.set(key, pending);
     return pending;
@@ -284,7 +307,7 @@ export class SessionManager {
   async #createContext(key, { startup = false } = {}) {
     const store = await JsonStore.open(join(this.#rootDir, `${key}.json`), this.#defaults);
     await this.#repairMatchedPush(store);
-    const adapter = this.#adapterFactory({ token: store.get().account?.token || '', store, sessionKey: key });
+    const adapter = await this.#adapterFactory({ token: store.get().account?.token || '', store, sessionKey: key });
     const persist = (snapshot) => this.#persistWorkerSnapshot(store, snapshot);
     const worker = this.#workerFactory({ adapter, store, sessionKey: key, runOperation: this.#runOperation, persist });
     const context = { sessionKey: key, store, adapter, worker, clients: new Set(), activeRequests: 0, restoreError: null, workerListeners: [], pushQueue: Promise.resolve(), pushRetryTimer: null, pushStopping: false, pushStopped: false, lastAccess: this.#now() };
@@ -348,12 +371,13 @@ export class SessionManager {
         if (info.mtimeMs > cutoff) continue;
         const parsed = JSON.parse(await readFile(path, 'utf8'));
         if (parsed.restoreError || hasDurableObligation(parsed.autoJoin) || hasPendingPushDelivery(parsed)) continue;
-        await unlink(path);
+        await this.#deleteSessionFiles(key);
       } catch (error) {
         if (error.code !== 'ENOENT') continue;
       }
     }
     await this.#cleanupAtomicTemps(entries);
+    await this.#cleanupTokenArtifacts(entries);
   }
 
   async #cleanupAtomicTemps(entries = null) {
@@ -365,6 +389,34 @@ export class SessionManager {
       try {
         const info = await lstat(path);
         if (!info.isFile() || info.mtimeMs > cutoff) continue;
+        await unlink(path);
+      } catch (error) {
+        if (error.code !== 'ENOENT') continue;
+      }
+    }
+  }
+
+  async #cleanupTokenArtifacts(entries = null) {
+    const candidates = entries ?? await readdir(this.#rootDir, { withFileTypes: true });
+    const cutoff = this.#now() - this.#ttlMs;
+    for (const entry of candidates) {
+      if (!entry.isFile()) continue;
+      const match = TOKEN_FILE.exec(entry.name) ?? TOKEN_TEMP_FILE.exec(entry.name);
+      if (!match) continue;
+      const key = match[1];
+      if (this.#contexts.has(key) || this.#pendingContexts.has(key) || this.#removingContexts.has(key)) continue;
+      const path = join(this.#rootDir, entry.name);
+      try {
+        const info = await lstat(path);
+        if (!info.isFile() || info.mtimeMs > cutoff) continue;
+        if (TOKEN_FILE.test(entry.name)) {
+          try {
+            await lstat(join(this.#rootDir, `${key}.json`));
+            continue;
+          } catch (error) {
+            if (error.code !== 'ENOENT') continue;
+          }
+        }
         await unlink(path);
       } catch (error) {
         if (error.code !== 'ENOENT') continue;
@@ -421,13 +473,7 @@ export class SessionManager {
       context.clients.clear();
       await this.#stopPushContext(context);
       await context.worker.shutdown?.();
-      if (deleteFile) {
-        try {
-          await unlink(join(this.#rootDir, `${key}.json`));
-        } catch (error) {
-          if (error.code !== 'ENOENT') throw error;
-        }
-      }
+      if (deleteFile) await this.#deleteSessionFiles(key);
       context.removed = true;
     });
     this.#removingContexts.set(key, removal);
@@ -435,6 +481,16 @@ export class SessionManager {
       if (this.#removingContexts.get(key) === removal) this.#removingContexts.delete(key);
     }, () => {});
     return removal;
+  }
+
+  async #deleteSessionFiles(key) {
+    for (const suffix of ['.json', '.token']) {
+      try {
+        await unlink(join(this.#rootDir, `${key}${suffix}`));
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+    }
   }
 
   async #initialize() {
@@ -446,6 +502,7 @@ export class SessionManager {
     let cursor = 0;
     const restoreNext = async () => {
       while (cursor < files.length) {
+        if (this.#shuttingDown) break;
         const entry = files[cursor++];
         try {
           const parsed = JSON.parse(await readFile(join(this.#rootDir, entry.name), 'utf8'));
@@ -458,6 +515,7 @@ export class SessionManager {
     };
     const concurrency = Math.min(this.#restoreConcurrency, files.length);
     await Promise.all(Array.from({ length: concurrency }, restoreNext));
+    await this.#cleanupTokenArtifacts(entries);
   }
 
   #recordStartupError(file, _error) {
@@ -654,9 +712,15 @@ export class SessionManager {
     try { this.#logger?.error?.('Auto Join worker failed.', { code: 'WORKER_FAILED' }); } catch {}
   }
 
-  async shutdown() {
-    await this.ready();
+  shutdown() {
+    if (this.#shutdownPromise) return this.#shutdownPromise;
+    this.#shuttingDown = true;
     clearInterval(this.#cleanupTimer);
-    await Promise.all([...this.#contexts.values()].map((context) => this.#removeContext(context, { deleteFile: false })));
+    this.#shutdownPromise = (async () => {
+      await this.#initializePromise;
+      await Promise.allSettled([...this.#pendingContexts.values()]);
+      await Promise.all([...this.#contexts.values()].map((context) => this.#removeContext(context, { deleteFile: false })));
+    })();
+    return this.#shutdownPromise;
   }
 }

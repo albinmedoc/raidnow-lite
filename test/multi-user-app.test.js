@@ -199,6 +199,20 @@ test('unrecognized API routes and methods do not allocate sessions', async () =>
   }
 });
 
+test('returns 503 when a stateful request arrives after session shutdown begins', async () => {
+  const fixture = await createMultiUserApp();
+  try {
+    await fixture.manager.shutdown();
+    const response = await fetch(`${fixture.baseUrl}/api/config`);
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get('set-cookie'), null);
+  } finally {
+    await fixture.manager.shutdown();
+    await new Promise((resolve) => fixture.app.server.close(resolve));
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test('idle reset removes state, expires the cookie, and creates a fresh session later', async () => {
   const fixture = await createMultiUserApp({ managerOptions: { cookieSecure: true } });
   try {

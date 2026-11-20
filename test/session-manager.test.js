@@ -189,6 +189,40 @@ test('passes the session store to the worker and awaits async restore', async ()
   }
 });
 
+test('awaits an async adapter factory before worker creation and restore', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'raidnow-session-async-adapter-'));
+  let releaseAdapter;
+  let workerCreated = false;
+  const adapter = { kind: 'resolved-adapter' };
+  const manager = new SessionManager({
+    rootDir: root,
+    defaults: { autoJoin: { state: 'searching' } },
+    adapterFactory: async () => new Promise((resolve) => { releaseAdapter = () => resolve(adapter); }),
+    workerFactory: ({ adapter: received }) => {
+      workerCreated = true;
+      assert.equal(received, adapter);
+      return {
+        status: () => ({ state: 'idle' }),
+        restore() { assert.equal(received, adapter); return true; },
+        shutdown() {}
+      };
+    }
+  });
+  try {
+    const resolving = manager.resolve(requestStub(), responseStub());
+    await waitFor(() => typeof releaseAdapter === 'function');
+    assert.equal(workerCreated, false);
+    releaseAdapter();
+    const context = await resolving;
+    assert.equal(context.adapter, adapter);
+    assert.equal(workerCreated, true);
+  } finally {
+    releaseAdapter?.();
+    await manager.shutdown();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('requests arriving during restore wait for the same initialized context', async () => {
   const root = await mkdtemp(join(tmpdir(), 'raidnow-session-restore-race-'));
   let releaseRestore;
@@ -505,6 +539,74 @@ test('observes worker errors with sanitized diagnostics', async () => {
   }
 });
 
+test('shutdown waits for a context whose adapter factory was already pending and closes its worker exactly once', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'raidnow-session-pending-shutdown-'));
+  const key = 'a'.repeat(64);
+  const durable = { ...initialSnapshot(), intent: 'search', wake: { kind: 'scan', dueAt: '2099-01-01T00:00:00.000Z' } };
+  await writeFile(join(root, `${key}.json`), JSON.stringify({ autoJoin: durable }), { mode: 0o600 });
+  await writeFile(join(root, `${key}.token`), 'opaque\n', { mode: 0o600 });
+
+  let releaseAdapter;
+  let adapterStarted;
+  const adapterPending = new Promise((resolve) => { adapterStarted = resolve; });
+  let releaseWorkerShutdown;
+  let workerShutdownStarted;
+  const workerStopping = new Promise((resolve) => { workerShutdownStarted = resolve; });
+  let shutdownCalls = 0;
+  const manager = new SessionManager({
+    rootDir: root,
+    adapterFactory: async () => {
+      adapterStarted();
+      await new Promise((resolve) => { releaseAdapter = resolve; });
+      return {};
+    },
+    workerFactory: () => ({
+      status: () => ({ state: 'searching' }),
+      restore: () => true,
+      async shutdown() {
+        shutdownCalls += 1;
+        workerShutdownStarted();
+        await new Promise((resolve) => { releaseWorkerShutdown = resolve; });
+      }
+    })
+  });
+  try {
+    await adapterPending;
+    let shutdownResolved = false;
+    const shutdownWork = manager.shutdown();
+    assert.equal(manager.shutdown(), shutdownWork);
+    const shuttingDown = shutdownWork.then(() => { shutdownResolved = true; });
+
+    const rejectedAdmission = manager.resolve(requestStub(`raidnow_session=${'B'.repeat(43)}`), responseStub())
+      .then(() => 'resolved', (error) => error?.code);
+    assert.equal(await Promise.race([
+      rejectedAdmission,
+      new Promise((resolve) => setImmediate(() => resolve('still-pending')))
+    ]), 'SESSION_SHUTTING_DOWN');
+    assert.equal(shutdownResolved, false);
+
+    releaseAdapter();
+    await workerStopping;
+    assert.equal(shutdownCalls, 1);
+    assert.equal(shutdownResolved, false);
+
+    releaseWorkerShutdown();
+    await shuttingDown;
+    assert.equal(shutdownCalls, 1);
+    await access(join(root, `${key}.json`));
+    await access(join(root, `${key}.token`));
+    await assert.rejects(
+      manager.resolve(requestStub(`raidnow_session=${'C'.repeat(43)}`), responseStub()),
+      (error) => error?.code === 'SESSION_SHUTTING_DOWN'
+    );
+  } finally {
+    releaseAdapter?.();
+    releaseWorkerShutdown?.();
+    await manager.shutdown();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('shutdown prevents a worker waiting for an upstream permit from launching', async () => {
   const root = await mkdtemp(join(tmpdir(), 'raidnow-session-abort-wait-'));
   const pending = {
@@ -577,8 +679,10 @@ test('cleanup expires idle loaded and unloaded sessions but preserves protected 
     const malformedKey = '8'.repeat(64);
     const old = new Date(0);
     await writeFile(join(root, `${unloadedKey}.json`), JSON.stringify({ autoJoin: { state: 'idle' } }), { mode: 0o600 });
+    await writeFile(join(root, `${unloadedKey}.token`), 'opaque\n', { mode: 0o600 });
     await writeFile(join(root, `${malformedKey}.json`), '{broken', { mode: 0o600 });
     await utimes(join(root, `${unloadedKey}.json`), old, old);
+    await utimes(join(root, `${unloadedKey}.token`), old, old);
     await utimes(join(root, `${malformedKey}.json`), old, old);
 
     now += 2_000;
@@ -589,6 +693,7 @@ test('cleanup expires idle loaded and unloaded sessions but preserves protected 
     await manager.cleanup();
     await assert.rejects(access(join(root, `${idle.sessionKey}.json`)));
     await assert.rejects(access(join(root, `${unloadedKey}.json`)));
+    await assert.rejects(access(join(root, `${unloadedKey}.token`)));
     await access(join(root, `${protectedContext.sessionKey}.json`));
     await access(join(root, `${streamingContext.sessionKey}.json`));
     await access(join(root, `${malformedKey}.json`));
@@ -637,6 +742,45 @@ test('startup and cleanup remove only stale regular atomic temp files', async ()
   }
 });
 
+test('cleanup removes only stale orphan token artifacts after the session TTL', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'raidnow-session-token-cleanup-'));
+  let now = 10_000;
+  const staleKey = '1'.repeat(64);
+  const recentKey = '2'.repeat(64);
+  const tempKey = '3'.repeat(64);
+  const unrelated = 'notes.token';
+  const staleToken = join(root, `${staleKey}.token`);
+  const recentToken = join(root, `${recentKey}.token`);
+  const staleTemp = join(root, `${tempKey}.token.123.0123456789abcdef.tmp`);
+  await writeFile(staleToken, 'stale\n', { mode: 0o600 });
+  await writeFile(recentToken, 'recent\n', { mode: 0o600 });
+  await writeFile(staleTemp, 'temporary\n', { mode: 0o600 });
+  await writeFile(join(root, unrelated), 'unrelated\n', { mode: 0o600 });
+  for (const path of [staleToken, staleTemp, join(root, unrelated)]) await utimes(path, new Date(0), new Date(0));
+  const manager = new SessionManager({
+    rootDir: root,
+    ttlMs: 1_000,
+    now: () => now,
+    adapterFactory: () => ({}),
+    workerFactory: () => ({ status: () => ({ state: 'idle' }), restore: () => false, shutdown() {} })
+  });
+  try {
+    const active = await manager.resolve(requestStub(`raidnow_session=${'A'.repeat(43)}`), responseStub());
+    const activeToken = join(root, `${active.sessionKey}.token`);
+    await writeFile(activeToken, 'active\n', { mode: 0o600 });
+    await utimes(activeToken, new Date(0), new Date(0));
+    await manager.cleanup();
+    await assert.rejects(access(staleToken));
+    await assert.rejects(access(staleTemp));
+    await access(activeToken);
+    await access(recentToken);
+    await access(join(root, unrelated));
+  } finally {
+    await manager.shutdown();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('capacity evicts the least-recently-used safe context and rejects when every context is protected', async () => {
   const root = await mkdtemp(join(tmpdir(), 'raidnow-session-capacity-'));
   const workers = [];
@@ -652,11 +796,14 @@ test('capacity evicts the least-recently-used safe context and rejects when ever
   });
   try {
     const first = await manager.resolve(requestStub(`raidnow_session=${'A'.repeat(43)}`), responseStub());
+    const firstToken = join(root, `${first.sessionKey}.token`);
+    await writeFile(firstToken, 'opaque\n', { mode: 0o600 });
     await manager.resolve(requestStub(`raidnow_session=${'B'.repeat(43)}`), responseStub());
     workers[1].current = { state: 'searching' };
     const third = await manager.resolve(requestStub(`raidnow_session=${'C'.repeat(43)}`), responseStub());
     assert.notEqual(third.sessionKey, first.sessionKey);
     await assert.rejects(access(join(root, `${first.sessionKey}.json`)));
+    await assert.rejects(access(firstToken));
     workers[2].current = { state: 'matched' };
     await assert.rejects(
       manager.resolve(requestStub(`raidnow_session=${'D'.repeat(43)}`), responseStub()),
@@ -689,14 +836,35 @@ test('reset removes only idle sessions and expires the cookie with matching secu
     await context.store.update({ autoJoin: { ...initialSnapshot(), queue: { state: 'unknown' } } });
     await assert.rejects(manager.reset(requestStub(cookie), responseStub(), context), (error) => error.code === 'SESSION_CONFLICT');
     await context.store.update({ autoJoin: initialSnapshot() });
+    const tokenFile = join(root, `${context.sessionKey}.token`);
+    await writeFile(tokenFile, 'opaque\n', { mode: 0o600 });
     const resetResponse = responseStub();
     await manager.reset(requestStub(cookie), resetResponse, context);
     assert.match(resetResponse.getHeader('set-cookie'), /^raidnow_session=;/);
     assert.match(resetResponse.getHeader('set-cookie'), /Max-Age=0/);
     assert.match(resetResponse.getHeader('set-cookie'), /HttpOnly; SameSite=Strict; Secure/);
     await assert.rejects(access(join(root, `${context.sessionKey}.json`)));
+    await assert.rejects(access(tokenFile));
   } finally {
     await manager.shutdown();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('ordinary shutdown retains the session token artifact', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'raidnow-session-token-shutdown-'));
+  const manager = new SessionManager({
+    rootDir: root,
+    adapterFactory: () => ({}),
+    workerFactory: () => ({ status: () => ({ state: 'idle' }), restore: () => false, shutdown() {} })
+  });
+  try {
+    const context = await manager.resolve(requestStub(), responseStub());
+    const tokenFile = join(root, `${context.sessionKey}.token`);
+    await writeFile(tokenFile, 'opaque\n', { mode: 0o600 });
+    await manager.shutdown();
+    assert.equal(await readFile(tokenFile, 'utf8'), 'opaque\n');
+  } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
