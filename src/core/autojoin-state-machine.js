@@ -130,6 +130,9 @@ function beginRaidReconciliation(snapshot, now, effects = []) {
 }
 
 function beginQueueCleanup(snapshot, now, matchedValidationIntervalMs, effects = []) {
+  if (snapshot.intent === 'leave' && snapshot.raid.state === 'none' && snapshot.queue.state !== 'none') {
+    snapshot = { ...snapshot, intent: 'stop', terminal: { target: 'stopped', error: snapshot.terminal.error } };
+  }
   if (snapshot.operation) return { snapshot, effects };
   if (snapshot.intent === 'leave' && ['matched', 'unknown'].includes(snapshot.raid.state)) {
     return beginRaidReconciliation(snapshot, now, effects);

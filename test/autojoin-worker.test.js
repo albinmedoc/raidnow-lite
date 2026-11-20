@@ -258,6 +258,36 @@ test('leave aborts an in-flight queue read before reconciling raid membership', 
   worker.shutdown();
 });
 
+test('finished leave exposes safe local abandonment for an unremovable queue', async () => {
+  const clock = new FakeClock();
+  const worker = new AutoJoinWorker({
+    adapter: {
+      async checkMatching() { return { id: 'still-present' }; },
+      async cancelMatching() { throw new Error('cancel rejected'); }
+    },
+    pollIntervalMs: 100,
+    clock
+  });
+  await worker.restore({
+    ...initialSnapshot(),
+    intent: 'leave',
+    search: { profile, selection, nextQueuePollAt: null, attemptedRaids: {} },
+    queue: { state: 'unknown' },
+    raid: { state: 'none', target: null, value: null },
+    wake: { kind: 'reconcileQueue', dueAt: new Date(clock.now()).toISOString() },
+    terminal: { target: 'idle', error: null },
+    retryCount: 3,
+    lastError: 'cancel rejected'
+  });
+  await clock.tick(0);
+  const status = await waitFor(worker, (value) => value.canAbandonLocal);
+  assert.equal(status.state, 'reconciling');
+  assert.equal(status.raid, null);
+  await worker.abandonLocal();
+  assert.equal(worker.status().state, 'idle');
+  worker.shutdown();
+});
+
 test('leave confirms raid absence before retrying blocked queue cleanup', async () => {
   const clock = new FakeClock();
   let membershipChecks = 0;
