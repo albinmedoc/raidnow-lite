@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-ARG RAIDNOW_CLI_REF=5a8fbb0324908353e6c33b2deb7755bb03a08b69
+ARG RAIDNOW_CLI_REF=c79c49f5e0a24a2f17ae450ba8a5da5a795f5142
 
 FROM golang:1.27.4-alpine AS raidnow-cli-builder
 

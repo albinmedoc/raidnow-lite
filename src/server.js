@@ -16,6 +16,7 @@ const port = Number(process.env.PORT || 4173);
 const host = process.env.HOST || '127.0.0.1';
 const mode = process.env.RAIDNOW_MODE === 'live' ? 'live' : 'demo';
 const liveWrites = process.env.RAIDNOW_LIVE_WRITES === 'true';
+const diagnosticsEnabled = process.env.RAIDNOW_DIAGNOSTICS === 'true';
 const pollIntervalMs = Number(process.env.RAIDNOW_POLL_INTERVAL_MS || (mode === 'demo' ? 3_000 : 15_000));
 // Session resource bounds. Defaults are intentionally conservative for one small instance.
 const sessionTtlMs = Number(process.env.RAIDNOW_SESSION_TTL_MS || 30 * 24 * 60 * 60 * 1_000);
@@ -55,7 +56,10 @@ const sessionManager = new SessionManager({
     adapter,
     runOperation,
     pollIntervalMs,
-    persist
+    persist,
+    diagnostics: diagnosticsEnabled
+      ? (event) => console.warn(JSON.stringify(event))
+      : null
   })
 });
 

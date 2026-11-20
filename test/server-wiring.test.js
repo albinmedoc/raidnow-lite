@@ -16,3 +16,9 @@ test('server wires one per-session CLI token adapter in live mode', () => {
   assert.doesNotMatch(source, /\bRaidNowAdapter\b/);
   assert.doesNotMatch(source, /RAIDNOW_TOKEN|RAIDNOW_CSRF_TOKEN/);
 });
+
+test('server enables structured operation diagnostics only through the explicit flag', () => {
+  assert.match(source, /RAIDNOW_DIAGNOSTICS\s*===\s*'true'/);
+  assert.match(source, /diagnostics:\s*diagnosticsEnabled/);
+  assert.match(source, /JSON\.stringify\(event\)/);
+});

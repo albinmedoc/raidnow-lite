@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { initialSnapshot, migrateSnapshot, reduceAutoJoin } from './autojoin-state-machine.js';
+import { CliCommandError } from '../adapters/cli-process-runner.js';
 
 const defaultClock = {
   now: () => Date.now(),
@@ -11,12 +12,23 @@ const defaultClock = {
   clearTimeout: (handle) => globalThis.clearTimeout(handle)
 };
 
+const WRITE_OPERATIONS = new Set(['createQueue', 'cancelQueue', 'joinRaid', 'leaveRaid']);
+
 function clone(value) {
   return structuredClone(value);
 }
 
 function message(error) {
   return error?.message || String(error);
+}
+
+function diagnosticMessage(error, operation) {
+  let value = message(error).replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 512);
+  const trainerCode = operation.input?.profile?.trainerCode;
+  if (trainerCode) value = value.replaceAll(String(trainerCode), '[REDACTED]');
+  value = value.replace(/\b(?:gofriend_token|token)\s*[:=]\s*[^\s,;]+/gi, (match) => `${match.slice(0, match.search(/[:=]/) + 1)}[REDACTED]`);
+  value = value.replace(/[A-Za-z0-9_-]{40,128}/g, '[REDACTED]');
+  return value.replace(/(^|[^A-Za-z0-9])(?:\d{12}|\d{4}(?:[ -]\d{4}){2})(?=$|[^A-Za-z0-9])/g, '$1[REDACTED]');
 }
 
 function runDirect(operation, { signal } = {}) {
@@ -45,6 +57,7 @@ export class AutoJoinWorker extends EventEmitter {
   #persist;
   #clock;
   #runOperation;
+  #diagnostics;
   #pollIntervalMs;
   #scanIntervalMs;
   #matchedValidationIntervalMs;
@@ -57,12 +70,13 @@ export class AutoJoinWorker extends EventEmitter {
   #recoverPromise = null;
   #waiters = new Set();
 
-  constructor({ adapter, pollIntervalMs = 15_000, scanIntervalMs = 1_000, matchedValidationIntervalMs = 60_000, persist = async () => {}, clock = defaultClock, runOperation = runDirect }) {
+  constructor({ adapter, pollIntervalMs = 15_000, scanIntervalMs = 1_000, matchedValidationIntervalMs = 60_000, persist = async () => {}, clock = defaultClock, runOperation = runDirect, diagnostics = null }) {
     super();
     this.#adapter = adapter;
     this.#persist = persist;
     this.#clock = clock;
     this.#runOperation = runOperation;
+    this.#diagnostics = typeof diagnostics === 'function' ? diagnostics : null;
     this.#pollIntervalMs = pollIntervalMs;
     this.#scanIntervalMs = scanIntervalMs;
     this.#matchedValidationIntervalMs = matchedValidationIntervalMs;
@@ -229,14 +243,17 @@ export class AutoJoinWorker extends EventEmitter {
     if (!this.#running || this.#activeOperation || this.#snapshot.operation?.opId !== opId) return;
     const operation = clone(this.#snapshot.operation);
     const controller = new AbortController();
+    const startedAt = this.#clock.now();
     this.#activeOperation = { opId, controller };
     this.#runOperation(() => this.#executeAdapter(operation, controller.signal), { signal: controller.signal })
       .then((value) => {
         if (!this.#running) return;
+        if (WRITE_OPERATIONS.has(operation.kind)) this.#recordDiagnostic(operation, 'succeeded', null, startedAt);
         return this.#dispatch({ type: 'operationSucceeded', opId, value });
       })
       .catch((error) => {
         if (!this.#running) return;
+        this.#recordDiagnostic(operation, 'rejected', error, startedAt);
         return this.#dispatch({
           type: 'operationRejected',
           opId,
@@ -252,6 +269,38 @@ export class AutoJoinWorker extends EventEmitter {
           this.#launchAdapter(this.#snapshot.operation.opId);
         }
       });
+  }
+
+  #recordDiagnostic(operation, result, error, startedAt) {
+    if (!this.#diagnostics) return;
+    const event = {
+      event: 'raidnow_operation',
+      operation: operation.kind,
+      result,
+      at: new Date(this.#clock.now()).toISOString(),
+      durationMs: Math.max(0, this.#clock.now() - startedAt)
+    };
+    if (error) {
+      event.code = typeof error.code === 'string' ? error.code : 'UNCLASSIFIED_ERROR';
+      if (Number.isInteger(error.exitCode)) event.exitCode = error.exitCode;
+      if (typeof error.command === 'string') event.command = error.command;
+      if (typeof error.status === 'string' || Number.isFinite(error.status)) event.status = error.status;
+      event.message = diagnosticMessage(error, operation);
+    }
+    if (WRITE_OPERATIONS.has(operation.kind)) {
+      if (result === 'succeeded') event.writeOutcome = 'confirmed';
+      else if (error instanceof CliCommandError && error.exitCode === 8) event.writeOutcome = 'not-dispatched';
+      else if (error instanceof CliCommandError && [2, 3, 4, 5, 6, 7].includes(error.exitCode)) event.writeOutcome = 'definite';
+      else event.writeOutcome = 'unknown';
+    }
+    if (['joinRaid', 'leaveRaid', 'verifyMembership', 'verifyMatched'].includes(operation.kind)) {
+      event.raidId = String(operation.input?.raidId ?? '');
+    }
+    try {
+      this.#diagnostics(event);
+    } catch {
+      // Diagnostics must never affect the workflow.
+    }
   }
 
   async #executeAdapter(operation, signal) {

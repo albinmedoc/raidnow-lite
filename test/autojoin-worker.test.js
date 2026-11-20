@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { AutoJoinWorker } from '../src/core/autojoin-worker.js';
 import { initialSnapshot } from '../src/core/autojoin-state-machine.js';
 import { RaidNowAdapter } from '../src/adapters/raidnow-adapter.js';
+import { CliCommandError } from '../src/adapters/cli-process-runner.js';
 
 const profile = { trainerName: 'Albin123', trainerCode: '123456789012', level: 50, countryCode: 'se' };
 const selection = { ranks: ['5'], pokemon: ['Giratina'] };
@@ -106,6 +107,73 @@ test('runs at most one adapter operation and one timer', async () => {
   await flush();
   assert.equal(maxActive, 1);
   assert.ok(clock.timers.size <= 1);
+});
+
+test('diagnostics report a rejected raid join without dumping its private input', async () => {
+  const clock = new FakeClock();
+  const diagnostics = [];
+  const anonymousToken = 'AbCdEf0123456789_-AbCdEf0123456789_-AbCdEfGH';
+  const rejection = new CliCommandError({
+    message: `Lobby is full. token=${anonymousToken}`,
+    code: 'UPSTREAM_REJECTION',
+    exitCode: 7,
+    command: 'raid join',
+    status: 401
+  });
+  const worker = new AutoJoinWorker({
+    adapter: {
+      async createMatching() { return { status: 'success' }; },
+      async listRaidsForSelection() { return [{ rpl_id: 'direct-1', rpl_rank: '5', rpl_pokemon: 'Giratina' }]; },
+      async joinRaidFast() { throw rejection; },
+      async findRaid() { return null; }
+    },
+    pollIntervalMs: 100,
+    clock,
+    diagnostics: (event) => diagnostics.push(event)
+  });
+
+  await worker.start({ profile, selection: { ...selection, strategy: 'hybrid' } });
+  await waitFor(worker, (status) => status.nextPollAt !== null);
+  await clock.tick(0);
+  await waitFor(worker, () => diagnostics.some((event) => event.operation === 'joinRaid' && event.result === 'rejected'));
+
+  const event = diagnostics.find((item) => item.operation === 'joinRaid' && item.result === 'rejected');
+  assert.deepEqual(event, {
+    event: 'raidnow_operation',
+    operation: 'joinRaid',
+    result: 'rejected',
+    at: new Date(clock.now()).toISOString(),
+    durationMs: 0,
+    code: 'UPSTREAM_REJECTION',
+    exitCode: 7,
+    command: 'raid join',
+    status: 401,
+    message: 'Lobby is full. token=[REDACTED]',
+    writeOutcome: 'definite',
+    raidId: 'direct-1'
+  });
+  const serialized = JSON.stringify(diagnostics);
+  assert.equal(serialized.includes(profile.trainerCode), false);
+  assert.equal(serialized.includes(profile.trainerName), false);
+  assert.equal(serialized.includes(profile.countryCode), false);
+  assert.equal(serialized.includes(anonymousToken), false);
+  worker.shutdown();
+});
+
+test('diagnostics classify an untyped write failure as unknown', async () => {
+  const diagnostics = [];
+  const worker = new AutoJoinWorker({
+    adapter: {
+      async createMatching() { throw Object.assign(new Error('Operation aborted.'), { exitCode: 7 }); }
+    },
+    diagnostics: (event) => diagnostics.push(event)
+  });
+
+  await worker.start({ profile, selection });
+  await waitFor(worker, () => diagnostics.some((event) => event.operation === 'createQueue' && event.result === 'rejected'));
+  const event = diagnostics.find((item) => item.operation === 'createQueue' && item.result === 'rejected');
+  assert.equal(event.writeOutcome, 'unknown');
+  worker.shutdown();
 });
 
 test('hybrid match is published before queue cancellation and remains visible after cancel failure', async () => {
