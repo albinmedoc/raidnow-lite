@@ -52,6 +52,23 @@ test('initializes the upstream live profile when the adapter supports it', async
   } finally { await close(app); }
 });
 
+test('non-numeric upstream status returns a generic 500 without crashing the server', async () => {
+  const app = await startTestApp({
+    async updateProfile() {
+      throw Object.assign(new Error('Upstream failed.'), { status: 'failed' });
+    }
+  });
+  try {
+    const response = await fetch(`${app.baseUrl}/api/profile`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ trainerName: 'Albin123', trainerCode: '123456789012', level: 50, countryCode: 'se' })
+    });
+    assert.equal(response.status, 500);
+    assert.deepEqual(await response.json(), { message: 'Ett internt fel uppstod.' });
+    assert.equal((await fetch(`${app.baseUrl}/api/health`)).status, 200);
+  } finally { await close(app); }
+});
+
 test('logs in without returning or storing the password in the browser response', async () => {
   const app = await startTestApp({
     async listRaids() { return []; },
