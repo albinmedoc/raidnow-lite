@@ -133,14 +133,18 @@ test('hybrid match is published before queue cancellation and remains visible af
   assert.match(worker.status().lastError, /cancel timeout/);
 });
 
-test('stop and leave preserve matched raid while queue cleanup is serialized', async () => {
+test('leave proceeds to raid reconciliation after an in-flight queue cancellation succeeds', async () => {
   const clock = new FakeClock();
   let resolveCancel;
+  let membershipChecks = 0;
+  let queueChecks = 0;
   let leaves = 0;
+  const order = [];
   const adapter = {
     async cancelMatching() { return new Promise((resolve) => { resolveCancel = resolve; }); },
-    async checkMatching() { return {}; },
-    async leaveRaid() { leaves += 1; return { status: 'success' }; }
+    async checkMatching() { queueChecks += 1; order.push('queue'); return {}; },
+    async findRaid() { membershipChecks += 1; order.push('raid'); return { rpl_id: 'raid-1', join: 1 }; },
+    async leaveRaid() { leaves += 1; order.push('leave'); return { status: 'success' }; }
   };
   const worker = new AutoJoinWorker({ adapter, pollIntervalMs: 100, clock });
   await worker.restore({
@@ -154,13 +158,144 @@ test('stop and leave preserve matched raid while queue cleanup is serialized', a
   await worker.stop();
   const leaving = worker.leaveRaid();
   await flush();
-  assert.equal(worker.status().raid.rpl_id, 'raid-1');
   assert.equal(leaves, 0);
   resolveCancel({ status: 'success' });
   await flush();
+  await clock.tick(0);
+  const status = await leaving;
+  assert.equal(membershipChecks, 1);
+  assert.equal(queueChecks, 1);
   assert.equal(leaves, 1);
-  await leaving;
-  assert.equal(worker.status().state, 'idle');
+  assert.ok(order.indexOf('raid') < order.indexOf('queue'));
+  assert.ok(order.indexOf('leave') < order.indexOf('queue'));
+  assert.equal(status.raid, null);
+  assert.equal(status.state, 'reconciling');
+  assert.equal(status.queueCancelPending, true);
+  worker.shutdown();
+});
+
+test('leave proceeds to raid reconciliation after an in-flight queue cancellation fails', async () => {
+  const clock = new FakeClock();
+  let rejectCancel;
+  let cancelCalls = 0;
+  let membershipChecks = 0;
+  let queueChecks = 0;
+  const order = [];
+  const worker = new AutoJoinWorker({
+    adapter: {
+      async cancelMatching() {
+        cancelCalls += 1;
+        if (cancelCalls > 1) throw new Error('cancel still rejected');
+        return new Promise((_resolve, reject) => { rejectCancel = reject; });
+      },
+      async checkMatching() { queueChecks += 1; order.push('queue'); return { id: 'still-present' }; },
+      async findRaid() { membershipChecks += 1; order.push('raid'); return null; }
+    },
+    pollIntervalMs: 100,
+    clock
+  });
+  await worker.restore({
+    ...initialSnapshot(),
+    intent: 'idle',
+    search: { profile, selection: { ...selection, strategy: 'hybrid' }, nextQueuePollAt: null, attemptedRaids: {} },
+    queue: { state: 'present' },
+    raid: { state: 'matched', target: 'raid-1', value: { rpl_id: 'raid-1' } },
+    terminal: { target: 'matched', error: null }
+  });
+  await worker.stop();
+  const leaving = worker.leaveRaid();
+  await flush();
+  rejectCancel(new Error('cancel rejected'));
+  await flush();
+  await clock.tick(0);
+  const status = await leaving;
+  assert.equal(membershipChecks, 1);
+  assert.equal(queueChecks, 1);
+  assert.ok(order.indexOf('raid') < order.indexOf('queue'));
+  assert.equal(status.raid, null);
+  assert.equal(status.state, 'reconciling');
+  assert.equal(status.queueCancelPending, true);
+  worker.shutdown();
+});
+
+test('leave aborts an in-flight queue read before reconciling raid membership', async () => {
+  const clock = new FakeClock();
+  let queueSignal;
+  let membershipChecks = 0;
+  const worker = new AutoJoinWorker({
+    adapter: {
+      async checkMatching(_request, { signal }) {
+        queueSignal = signal;
+        return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+      },
+      async findRaid() { membershipChecks += 1; return null; }
+    },
+    pollIntervalMs: 100,
+    clock
+  });
+  await worker.restore({
+    ...initialSnapshot(),
+    intent: 'idle',
+    search: { profile, selection: { ...selection, strategy: 'hybrid' }, nextQueuePollAt: null, attemptedRaids: {} },
+    queue: { state: 'unknown' },
+    raid: { state: 'matched', target: 'raid-1', value: { rpl_id: 'raid-1' } },
+    wake: { kind: 'reconcileQueue', dueAt: new Date(clock.now()).toISOString() },
+    terminal: { target: 'matched', error: null },
+    opSequence: 1
+  });
+  await clock.tick(0);
+  await waitFor(worker, () => Boolean(queueSignal));
+
+  const leaving = worker.leaveRaid();
+  await flush();
+  assert.equal(queueSignal.aborted, true);
+  await clock.tick(0);
+  const status = await leaving;
+  assert.equal(membershipChecks, 1);
+  assert.equal(status.raid, null);
+  assert.equal(status.state, 'reconciling');
+  assert.equal(status.queueCancelPending, true);
+  worker.shutdown();
+});
+
+test('leave confirms raid absence before retrying blocked queue cleanup', async () => {
+  const clock = new FakeClock();
+  let membershipChecks = 0;
+  let queueChecks = 0;
+  const order = [];
+  const worker = new AutoJoinWorker({
+    adapter: {
+      async findRaid() { membershipChecks += 1; order.push('raid'); return null; },
+      async checkMatching() { queueChecks += 1; order.push('queue'); return { id: 'still-present' }; },
+      async cancelMatching() { throw new Error('cancel rejected'); }
+    },
+    pollIntervalMs: 100,
+    clock
+  });
+  await worker.restore({
+    ...initialSnapshot(),
+    search: { profile, selection: { ...selection, strategy: 'hybrid' }, nextQueuePollAt: null, attemptedRaids: {} },
+    queue: { state: 'unknown' },
+    raid: { state: 'matched', target: 'raid-1', value: { rpl_id: 'raid-1' } },
+    terminal: { target: 'matched', error: null }
+  });
+
+  const leaving = worker.leaveRaid();
+  try {
+    await flush();
+    await clock.tick(0);
+    await flush();
+    assert.equal(membershipChecks, 1);
+    assert.equal(queueChecks, 1);
+    assert.equal(order[0], 'raid');
+    const status = await leaving;
+    assert.equal(status.raid, null);
+    assert.equal(status.state, 'reconciling');
+    assert.equal(status.queueCancelPending, true);
+  } finally {
+    worker.shutdown();
+    await leaving.catch(() => {});
+  }
 });
 
 test('leave remains pending through an uncertain timeout until absence is confirmed', async () => {
@@ -468,13 +603,16 @@ test('leave requested during active matched validation resolves without a write 
   let resolveValidation;
   let validationStarted = false;
   let leaves = 0;
+  let queueChecks = 0;
   const worker = new AutoJoinWorker({
     adapter: {
       findRaid() {
         validationStarted = true;
         return new Promise((resolve) => { resolveValidation = resolve; });
       },
-      async leaveRaid() { leaves += 1; return { status: 'success' }; }
+      async leaveRaid() { leaves += 1; return { status: 'success' }; },
+      async checkMatching() { queueChecks += 1; return { id: 'still-present' }; },
+      async cancelMatching() { throw new Error('cancel rejected'); }
     },
     matchedValidationIntervalMs: 25,
     clock
@@ -482,6 +620,8 @@ test('leave requested during active matched validation resolves without a write 
   t.after(() => worker.shutdown());
   await worker.restore({
     ...initialSnapshot(),
+    search: { profile, selection: { ...selection, strategy: 'hybrid' }, nextQueuePollAt: null, attemptedRaids: {} },
+    queue: { state: 'unknown' },
     raid: { state: 'matched', target: 'raid-1', value: { rpl_id: 'raid-1', join: 1 } },
     wake: { kind: 'revalidateMatched', dueAt: new Date(clock.now()).toISOString() },
     terminal: { target: 'matched', error: null }
@@ -492,8 +632,12 @@ test('leave requested during active matched validation resolves without a write 
   const leaving = worker.leaveRaid();
   await flush();
   resolveValidation(null);
-  assert.equal((await leaving).state, 'idle');
+  const status = await leaving;
+  assert.equal(status.state, 'reconciling');
+  assert.equal(status.raid, null);
+  assert.equal(status.queueCancelPending, true);
   assert.equal(leaves, 0);
+  assert.equal(queueChecks, 0);
 });
 
 test('missing findRaid remains locked and exposes the retry error', async () => {

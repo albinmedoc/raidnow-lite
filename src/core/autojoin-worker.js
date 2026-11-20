@@ -149,7 +149,7 @@ export class AutoJoinWorker extends EventEmitter {
   leaveRaid() {
     if (this.#leavePromise) return this.#leavePromise;
     const leaving = this.#dispatch({ type: 'leave' })
-      .then(() => this.#waitUntil((status) => status.state === 'idle' || (this.#snapshot.intent !== 'leave' && Boolean(this.#snapshot.terminal.error))))
+      .then(() => this.#waitUntil((status) => this.#snapshot.raid.state === 'none' || (this.#snapshot.intent !== 'leave' && Boolean(this.#snapshot.terminal.error))))
       .then((status) => {
         if (status.error) throw new Error(status.error);
         return status;

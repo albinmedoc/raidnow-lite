@@ -1,6 +1,7 @@
 import { normalizeRestoredSearchSelection } from './search-selection.js';
 
 const WRITE_KINDS = new Set(['createQueue', 'cancelQueue', 'joinRaid', 'leaveRaid']);
+const LEAVE_PREEMPTIBLE_READ_KINDS = new Set(['checkQueue', 'pollQueue', 'scanLobbies']);
 const MATCHED_VALIDATION_INTERVAL_MS = 60_000;
 const MATCHED_VALIDATION_MAX_RETRY_MS = 5 * 60_000;
 
@@ -130,6 +131,9 @@ function beginRaidReconciliation(snapshot, now, effects = []) {
 
 function beginQueueCleanup(snapshot, now, matchedValidationIntervalMs, effects = []) {
   if (snapshot.operation) return { snapshot, effects };
+  if (snapshot.intent === 'leave' && ['matched', 'unknown'].includes(snapshot.raid.state)) {
+    return beginRaidReconciliation(snapshot, now, effects);
+  }
   if (snapshot.queue.state === 'none') {
     if (snapshot.raid.state === 'unknown') return beginRaidReconciliation(snapshot, now, effects);
     if (snapshot.raid.state === 'matched') return scheduleMatchedValidation(snapshot, now, matchedValidationIntervalMs, effects);
@@ -267,6 +271,11 @@ export function reduceAutoJoin(current, event, config) {
       return { snapshot, effects: [{ type: 'reject', error: 'There is no active raid to leave.' }] };
     }
     const next = { ...snapshot, intent: 'leave', terminal: { target: 'idle', error: null } };
+    if (next.operation && LEAVE_PREEMPTIBLE_READ_KINDS.has(next.operation.kind)) {
+      const opId = next.operation.opId;
+      next.operation = null;
+      return beginQueueCleanup(next, now, matchedValidationIntervalMs, [{ type: 'abort', opId }]);
+    }
     if (next.operation || next.queue.state !== 'none') return beginQueueCleanup(next, now, matchedValidationIntervalMs);
     return withOperation({ ...next, raid: { ...next.raid, state: 'leaving' } }, 'leaveRaid', { raidId: next.raid.value.rpl_id }, now);
   }
@@ -292,7 +301,11 @@ export function reduceAutoJoin(current, event, config) {
       return withWake({ ...snapshot, queue: { state: 'unknown' }, operation: null, intent: snapshot.intent === 'search' ? 'stop' : snapshot.intent, terminal: { target: snapshot.intent === 'stop' ? 'stopped' : 'error', error: message }, lastError: message }, 'reconcileQueue', now, pollIntervalMs);
     }
     if (kind === 'cancelQueue') {
-      return withWake({ ...snapshot, queue: { state: 'unknown' }, operation: null, retryCount: Number(snapshot.retryCount || 0) + 1, lastError: message }, 'reconcileQueue', now, pollIntervalMs);
+      const next = { ...snapshot, queue: { state: 'unknown' }, operation: null, retryCount: Number(snapshot.retryCount || 0) + 1, lastError: message };
+      if (next.intent === 'leave' && ['matched', 'unknown'].includes(next.raid.state)) {
+        return beginQueueCleanup(next, now, matchedValidationIntervalMs);
+      }
+      return withWake(next, 'reconcileQueue', now, pollIntervalMs);
     }
     if (kind === 'joinRaid') {
       if (!event.definite) return withWake({ ...snapshot, raid: { ...snapshot.raid, state: 'unknown' }, operation: null, lastError: message }, 'reconcileRaid', now, pollIntervalMs);
@@ -399,6 +412,16 @@ export function reduceAutoJoin(current, event, config) {
         }, now, matchedValidationIntervalMs);
       }
       if (membership === 'absent') {
+        if (snapshot.intent === 'leave') {
+          return beginQueueCleanup({
+            ...snapshot,
+            raid: { state: 'none', target: null, value: null },
+            operation: null,
+            lastContactAt: now,
+            retryCount: 0,
+            lastError: null
+          }, now, matchedValidationIntervalMs);
+        }
         return {
           snapshot: { ...initialSnapshot(), opSequence: snapshot.opSequence, lastContactAt: now },
           effects: []
@@ -456,7 +479,7 @@ export function reduceAutoJoin(current, event, config) {
         retryCount: 0,
         lastError: null
       };
-      if (next.intent === 'leave') return { snapshot: terminalize(next), effects: [] };
+      if (next.intent === 'leave') return beginQueueCleanup(next, now, matchedValidationIntervalMs);
       if (next.intent === 'stop') return beginQueueCleanup(next, now, matchedValidationIntervalMs);
       const strategy = next.search?.selection?.strategy;
       return withWake(next, strategy === 'fast' || strategy === 'hybrid' ? 'scan' : 'pollQueue', now, strategy === 'fast' || strategy === 'hybrid' ? scanIntervalMs : pollIntervalMs);
@@ -475,7 +498,11 @@ export function reduceAutoJoin(current, event, config) {
       return withWake(next, next.search?.selection?.strategy === 'hybrid' && !next.search?.directScanDisabled ? 'scan' : 'pollQueue', now, next.search?.selection?.strategy === 'hybrid' && !next.search?.directScanDisabled ? scanIntervalMs : pollIntervalMs);
     }
     if (kind === 'cancelQueue') {
-      return withOperation({ ...snapshot, queue: { state: 'unknown' }, operation: null, lastContactAt: now }, 'checkQueue', { profile: snapshot.search?.profile, selection: snapshot.search?.selection }, now);
+      const next = { ...snapshot, queue: { state: 'unknown' }, operation: null, lastContactAt: now };
+      if (next.intent === 'leave' && ['matched', 'unknown'].includes(next.raid.state)) {
+        return beginQueueCleanup(next, now, matchedValidationIntervalMs);
+      }
+      return withOperation(next, 'checkQueue', { profile: snapshot.search?.profile, selection: snapshot.search?.selection }, now);
     }
     if (kind === 'checkQueue') {
       const present = Boolean(value?.id);
@@ -497,7 +524,7 @@ export function reduceAutoJoin(current, event, config) {
     }
     if (kind === 'leaveRaid') {
       const next = { ...snapshot, raid: { state: 'none', target: null, value: null }, operation: null, lastContactAt: now };
-      return { snapshot: terminalize(next), effects: [] };
+      return beginQueueCleanup(next, now, matchedValidationIntervalMs);
     }
   }
 
