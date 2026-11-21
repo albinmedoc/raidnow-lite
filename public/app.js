@@ -1,6 +1,6 @@
 import { clearLocalProfile, loadLocalProfile, saveLocalProfile } from './profile-storage.js';
-import { countryFlag, createBrowserResetController, formatRaidRating, isCurrentMatchedRaid } from './ui-helpers.js';
-import { createTrainerCodeQrController } from './trainer-code-qr.js';
+import { countryFlag, createBrowserResetController, formatRaidRating, isCurrentMatchedRaid, searchStatusDisplay } from './ui-helpers.js';
+import { createTrainerCodeQrController, isValidTrainerCode } from './trainer-code-qr.js';
 import {
   catalogForWorkerView,
   clearLocalSelection,
@@ -19,6 +19,7 @@ const state = {
   selected: new Map(),
   localSelection: null,
   autoJoin: null,
+  activeRaidId: null,
   activeRaidTimer: null,
   eventSource: null,
   pendingStart: false,
@@ -290,7 +291,7 @@ async function loadActiveRaid() {
     $('#activeRaidMeta').textContent = `Uppdaterad ${formatTime(details.fetchedAt)}`;
     const me = details.players.find((player) => player.isMe);
     $('#readyRaid').disabled = !me || me.ready === 1;
-    setHostTrainerCode(details.raid.rpl_code);
+    if (isValidTrainerCode(details.raid.rpl_code)) setHostTrainerCode(details.raid.rpl_code);
     const list = $('#activeRaidPlayers');
     list.replaceChildren();
     for (const player of details.players) {
@@ -328,12 +329,25 @@ async function loadActiveRaid() {
 }
 
 function updateActiveRaidPolling(matched) {
-  if (!matched) {
+  const raidId = matched?.rpl_id ? String(matched.rpl_id) : null;
+  if (!raidId) {
     if (state.activeRaidTimer) clearInterval(state.activeRaidTimer);
     state.activeRaidTimer = null;
+    state.activeRaidId = null;
+    $('#readyRaid').disabled = true;
+    setHostTrainerCode(null);
     return;
   }
-  loadActiveRaid();
+  const changedRaid = state.activeRaidId !== raidId;
+  if (changedRaid) {
+    if (state.activeRaidTimer) clearInterval(state.activeRaidTimer);
+    state.activeRaidTimer = null;
+    state.activeRaidId = raidId;
+    $('#readyRaid').disabled = true;
+    setHostTrainerCode(null);
+    if (isValidTrainerCode(matched.rpl_code)) setHostTrainerCode(matched.rpl_code);
+  }
+  if (changedRaid || !state.activeRaidTimer) loadActiveRaid();
   if (!state.activeRaidTimer) state.activeRaidTimer = setInterval(loadActiveRaid, 5_000);
 }
 
@@ -365,9 +379,10 @@ function renderStatus(status) {
     error: ['Sökningen misslyckades', status.error || 'Okänt fel.']
   };
   const [title, text] = labels[status.state] || [status.state, ''];
-  $('#statusTitle').textContent = title;
-  $('#statusText').textContent = text;
-  $('#statusDot').className = `status-dot ${status.state}`;
+  const display = searchStatusDisplay(status) || { title, text, displayState: status.state };
+  $('#statusTitle').textContent = display.title;
+  $('#statusText').textContent = display.text;
+  $('#statusDot').className = `status-dot ${display.displayState}`;
   $('#lastContact').textContent = status.lastContactAt ? `Kontakt ${formatTime(status.lastContactAt)}` : 'Ingen kontakt ännu';
   $('#nextPoll').textContent = status.nextPollAt ? `Nästa ${formatTime(status.nextPollAt)}` : '—';
   const matched = status.state === 'matched' && status.raid;
@@ -375,12 +390,8 @@ function renderStatus(status) {
   $('#statusCard').classList.toggle('hidden', !showSearchStatus);
   $('#abandonSearch').classList.toggle('hidden', !status.canAbandonLocal);
   $('#matchedPanel').classList.toggle('hidden', !matched);
-  $('#readyRaid').disabled = true;
   updateActiveRaidPolling(matched);
-  if (matched) {
-    $('#matchedBoss').textContent = bossName(status.raid.rpl_pokemon);
-    setHostTrainerCode(status.raid.rpl_code);
-  } else setHostTrainerCode(null);
+  if (matched) $('#matchedBoss').textContent = bossName(status.raid.rpl_pokemon);
   const reconciliation = reconcileCurrentSelection();
   renderRaids();
   renderSelectionDetail(reconciliation);

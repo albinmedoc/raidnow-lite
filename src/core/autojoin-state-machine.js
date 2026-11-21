@@ -4,6 +4,8 @@ const WRITE_KINDS = new Set(['createQueue', 'cancelQueue', 'joinRaid', 'leaveRai
 const LEAVE_PREEMPTIBLE_READ_KINDS = new Set(['checkQueue', 'pollQueue', 'scanLobbies']);
 const MATCHED_VALIDATION_INTERVAL_MS = 60_000;
 const MATCHED_VALIDATION_MAX_RETRY_MS = 5 * 60_000;
+const LOBBY_RETRY_COOLDOWN_MS = 30_000;
+const BLOCKED_LOBBY = 'blocked';
 
 export function initialSnapshot() {
   return {
@@ -82,22 +84,33 @@ function selectedRaid(snapshot, raids, now) {
   const pokemon = new Set((selection.pokemon ?? []).map(String));
   const ranks = new Set((selection.ranks ?? []).map(String));
   const attempted = snapshot.search?.attemptedRaids ?? {};
-  return (Array.isArray(raids) ? raids : []).find((raid) =>
-    raid?.rpl_id &&
-    pokemon.has(String(raid.rpl_pokemon)) &&
-    ranks.has(String(raid.rpl_rank)) &&
-    Number(raid.rpl_deleted || 0) === 0 &&
-    Number(raid.my || 0) !== 1 &&
-    (!Number(selection.hostLevel || 0) || Number(raid.rpl_level || 0) >= Number(selection.hostLevel)) &&
-    (Number(selection.hostCountry || 0) !== 1 || (
-      String(raid.rpl_country_code || '').trim() &&
-      String(raid.rpl_country_code).toLowerCase() !== String(profile.countryCode || '').toLowerCase()
-    )) &&
-    (Number(selection.weatherBoost || 0) !== 1 || Number(raid.rpl_weather || 0) === 1) &&
-    (Number(selection.weatherBoost || 0) !== 2 || Number(raid.rpl_weather || 0) !== 1) &&
-    (Number(raid.join || 0) === 1 || Number(raid.rpl_glevel || 0) <= Number(profile.level || 0)) &&
-    (!Number.isFinite(Date.parse(attempted[String(raid.rpl_id)])) || Date.parse(now) - Date.parse(attempted[String(raid.rpl_id)]) >= 10_000)
-  ) ?? null;
+  const nowMs = Date.parse(now);
+  return (Array.isArray(raids) ? raids : [])
+    .map((raid, index) => ({ raid, index, attemptedAt: attempted[String(raid?.rpl_id)] }))
+    .filter(({ raid, attemptedAt }) =>
+      raid?.rpl_id &&
+      pokemon.has(String(raid.rpl_pokemon)) &&
+      ranks.has(String(raid.rpl_rank)) &&
+      Number(raid.rpl_deleted || 0) === 0 &&
+      Number(raid.my || 0) !== 1 &&
+      (!Number(selection.hostLevel || 0) || Number(raid.rpl_level || 0) >= Number(selection.hostLevel)) &&
+      (Number(selection.hostCountry || 0) !== 1 || (
+        String(raid.rpl_country_code || '').trim() &&
+        String(raid.rpl_country_code).toLowerCase() !== String(profile.countryCode || '').toLowerCase()
+      )) &&
+      (Number(selection.weatherBoost || 0) !== 1 || Number(raid.rpl_weather || 0) === 1) &&
+      (Number(selection.weatherBoost || 0) !== 2 || Number(raid.rpl_weather || 0) !== 1) &&
+      (Number(raid.join || 0) === 1 || Number(raid.rpl_glevel || 0) <= Number(profile.level || 0)) &&
+      attemptedAt !== BLOCKED_LOBBY &&
+      (!Number.isFinite(Date.parse(attemptedAt)) || nowMs - Date.parse(attemptedAt) >= LOBBY_RETRY_COOLDOWN_MS)
+    )
+    .sort((left, right) => {
+      const leftTime = Date.parse(left.attemptedAt);
+      const rightTime = Date.parse(right.attemptedAt);
+      if (Number.isFinite(leftTime) !== Number.isFinite(rightTime)) return Number.isFinite(leftTime) ? 1 : -1;
+      if (Number.isFinite(leftTime) && leftTime !== rightTime) return leftTime - rightTime;
+      return left.index - right.index;
+    })[0]?.raid ?? null;
 }
 
 function terminalize(snapshot) {
@@ -308,6 +321,9 @@ export function reduceAutoJoin(current, event, config) {
       if (next.intent === 'leave' && ['matched', 'unknown'].includes(next.raid.state)) {
         return beginQueueCleanup(next, now, matchedValidationIntervalMs);
       }
+      if (next.intent === 'search' && next.raid.state === 'matched') {
+        return scheduleMatchedValidation(next, now, matchedValidationIntervalMs);
+      }
       if (next.intent === 'stop' && next.raid.state === 'none' && next.retryCount >= 3) {
         return { snapshot: { ...next, wake: null }, effects: [] };
       }
@@ -324,6 +340,9 @@ export function reduceAutoJoin(current, event, config) {
           lastError: null,
           retryCount: 0
         };
+        if (next.search?.attemptedRaids && snapshot.raid.target) {
+          next.search.attemptedRaids[String(snapshot.raid.target)] = event.blockLobbyJoin ? BLOCKED_LOBBY : now;
+        }
         if (next.intent === 'stop') return beginQueueCleanup(next, now, matchedValidationIntervalMs);
         return withWake(next, 'scan', now, scanIntervalMs);
       }
@@ -351,6 +370,24 @@ export function reduceAutoJoin(current, event, config) {
         retryCount: Number(snapshot.retryCount || 0) + 1,
         lastError: message
       }, 'reconcileRaid', now, pollIntervalMs);
+    }
+    if (kind === 'checkQueue' && snapshot.intent === 'search' && snapshot.raid.state === 'matched') {
+      return scheduleMatchedValidation({
+        ...snapshot,
+        queue: { state: 'unknown' },
+        operation: null,
+        retryCount: Number(snapshot.retryCount || 0) + 1,
+        lastError: message
+      }, now, matchedValidationIntervalMs);
+    }
+    if (kind === 'checkQueue' && snapshot.intent === 'search' && snapshot.raid.state === 'none' && snapshot.search?.recovering) {
+      return withWake({
+        ...snapshot,
+        queue: { state: 'unknown' },
+        operation: null,
+        retryCount: Number(snapshot.retryCount || 0) + 1,
+        lastError: message
+      }, 'reconcileQueue', now, pollIntervalMs);
     }
     if (kind === 'verifyMatched') {
       const retryCount = Number(snapshot.retryCount || 0) + 1;
@@ -419,7 +456,7 @@ export function reduceAutoJoin(current, event, config) {
             lastError: null
           }, 'leaveRaid', { raidId: value.rpl_id ?? snapshot.raid.target }, now);
         }
-        return scheduleMatchedValidation({
+        const confirmed = {
           ...snapshot,
           raid: { state: 'matched', target: String(value.rpl_id ?? snapshot.raid.target ?? ''), value: clone(value) },
           operation: null,
@@ -427,7 +464,9 @@ export function reduceAutoJoin(current, event, config) {
           retryCount: 0,
           lastError: null,
           terminal: { target: 'matched', error: null }
-        }, now, matchedValidationIntervalMs);
+        };
+        if (confirmed.queue.state !== 'none') return beginQueueCleanup(confirmed, now, matchedValidationIntervalMs);
+        return scheduleMatchedValidation(confirmed, now, matchedValidationIntervalMs);
       }
       if (membership === 'absent') {
         if (snapshot.intent === 'leave') {
@@ -439,6 +478,26 @@ export function reduceAutoJoin(current, event, config) {
             retryCount: 0,
             lastError: null
           }, now, matchedValidationIntervalMs);
+        }
+        if (snapshot.intent === 'search' && snapshot.search) {
+          const next = {
+            ...snapshot,
+            search: { ...snapshot.search, recovering: snapshot.queue.state !== 'present' },
+            raid: { state: 'none', target: null, value: null },
+            operation: null,
+            lastContactAt: now,
+            retryCount: 0,
+            lastError: null,
+            terminal: { target: 'searching', error: null }
+          };
+          if (next.queue.state === 'present') {
+            const strategy = next.search.selection?.strategy;
+            return withWake(next, strategy === 'fast' || strategy === 'hybrid' ? 'scan' : 'pollQueue', now, 0);
+          }
+          if (next.queue.state === 'none') {
+            return withOperation({ ...next, queue: { state: 'creating' } }, 'createQueue', { profile: next.search.profile, selection: next.search.selection }, now);
+          }
+          return withWake({ ...next, queue: { state: 'unknown' } }, 'reconcileQueue', now, 0);
         }
         return {
           snapshot: { ...initialSnapshot(), opSequence: snapshot.opSequence, lastContactAt: now },
@@ -527,13 +586,14 @@ export function reduceAutoJoin(current, event, config) {
       let next = { ...snapshot, operation: null, lastContactAt: now };
       if (present) {
         next.queue = { state: 'present' };
+        if (next.search?.recovering) next.search.recovering = false;
         if (next.intent === 'stop' || next.intent === 'leave' || next.raid.state === 'matched') return beginQueueCleanup(next, now, matchedValidationIntervalMs);
         return withWake(next, next.search?.selection?.strategy === 'hybrid' && !next.search?.directScanDisabled ? 'scan' : 'pollQueue', now, next.search?.selection?.strategy === 'hybrid' && !next.search?.directScanDisabled ? 0 : pollIntervalMs);
       }
       next.queue = { state: 'none' };
       next.retryCount = 0;
       next.lastError = null;
-      if (next.search?.recovering && next.intent === 'search') {
+      if (next.search?.recovering && next.intent === 'search' && next.raid.state === 'none') {
         next.search.recovering = false;
         return withOperation({ ...next, queue: { state: 'creating' } }, 'createQueue', { profile: next.search.profile, selection: next.search.selection }, now);
       }

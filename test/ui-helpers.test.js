@@ -5,7 +5,8 @@ import {
   createBrowserResetController,
   formatRaidRating,
   formatTrainerCode,
-  isCurrentMatchedRaid
+  isCurrentMatchedRaid,
+  searchStatusDisplay
 } from '../public/ui-helpers.js';
 
 test('formats a trainer code into selectable four-digit groups', () => {
@@ -42,6 +43,17 @@ test('rejects stale raid details after leaving or changing raids', () => {
   assert.equal(isCurrentMatchedRaid({ state: 'idle', raid }, raid), false);
   assert.equal(isCurrentMatchedRaid({ state: 'matched', raid: { rpl_id: 'raid-2' } }, raid), false);
   assert.equal(isCurrentMatchedRaid({ state: 'matched', raid }, { rpl_id: '' }), false);
+});
+
+test('keeps the visible search status stable while internal work changes', () => {
+  const expected = {
+    title: 'Söker i bakgrunden',
+    text: 'Du står i kö samtidigt som nya lobbyer bevakas.',
+    displayState: 'searching'
+  };
+  for (const state of ['starting', 'searching', 'joining', 'retrying']) {
+    assert.deepEqual(searchStatusDisplay({ state, error: 'Upstream error', directScanDisabled: true }), expected, state);
+  }
 });
 
 test('browser reset suspends resources before the request and deduplicates clicks', async () => {

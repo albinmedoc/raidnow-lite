@@ -50,8 +50,8 @@ test('PWA manifest and HTML expose installable Swedish metadata and local icons'
 
 test('service worker caches only an explicit shell and bypasses APIs, SSE, mutations, and external images', async () => {
   const source = await asset('service-worker.js');
-  assert.match(source, /raidnow-shell-v11/);
-  assert.doesNotMatch(source, /raidnow-shell-v10/);
+  assert.match(source, /raidnow-shell-v12/);
+  assert.doesNotMatch(source, /raidnow-shell-v11/);
   assert.match(source, /const SHELL_ASSETS = \[/);
   assert.match(source, /request\.method !== 'GET'/);
   assert.match(source, /url\.origin !== self\.location\.origin/);
@@ -191,7 +191,13 @@ test('matched raid UI keeps copy and exposes an accessible local QR dialog', asy
   assert.match(source, /\/api\/active-raid\/ready/);
   assert.match(source, /error\.data\?\.retryAllowed === false/);
   assert.match(source, /readyRaid/);
-  assert.match(source, /setHostTrainerCode\(status\.raid\.rpl_code\)/);
+  assert.match(source, /isValidTrainerCode\(details\.raid\.rpl_code\)/);
+  assert.match(source, /state\.activeRaidId !== raidId/);
+  const pollingSource = source.slice(source.indexOf('function updateActiveRaidPolling'), source.indexOf('function applySelectionPreferences'));
+  const renderStatusSource = source.slice(source.indexOf('function renderStatus'), source.indexOf('async function loadProfile'));
+  assert.match(pollingSource, /readyRaid'\)\.disabled = true/);
+  assert.doesNotMatch(renderStatusSource, /readyRaid'\)\.disabled = true/);
+  assert.doesNotMatch(source, /setHostTrainerCode\(status\.raid\.rpl_code\)/);
   assert.match(source, /setHostTrainerCode\(null\)/);
   assert.doesNotMatch(source, /state\.profile\.trainerCode[^\n]*createTrainerCodeQr/);
   assert.match(css, /@media\(min-width:801px\)\{[\s\S]*?\.active-raid-qr\{display:flex/);

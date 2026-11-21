@@ -200,6 +200,44 @@ test('full lobby rejection silently resumes lobby scanning while Auto Join remai
   worker.shutdown();
 });
 
+test('a host-started lobby is skipped so the next unseen lobby can be joined', async () => {
+  const clock = new FakeClock();
+  const joined = [];
+  const rejection = new CliCommandError({
+    message: 'Upstream avvisade begäran: The host has declared the start of the raid and you cannot participate. Use Auto join.',
+    code: 'UPSTREAM_REJECTION', exitCode: 7, command: 'raid join', status: 'rejected'
+  });
+  const worker = new AutoJoinWorker({
+    adapter: {
+      async createMatching() { return { status: 'success' }; },
+      async listRaidsForSelection() {
+        return [
+          { rpl_id: 'started', rpl_rank: '5', rpl_pokemon: 'Giratina' },
+          { rpl_id: 'fresh', rpl_rank: '5', rpl_pokemon: 'Giratina' }
+        ];
+      },
+      async joinRaidFast(raidId) {
+        joined.push(raidId);
+        if (raidId === 'started') throw rejection;
+        return { status: 'success' };
+      },
+      async cancelMatching() { return { status: 'success' }; }
+    },
+    pollIntervalMs: 100,
+    scanIntervalMs: 100,
+    clock
+  });
+
+  await worker.start({ profile, selection: { ...selection, strategy: 'hybrid' } });
+  await waitFor(worker, (status) => status.nextPollAt !== null);
+  await clock.tick(0);
+  await waitFor(worker, () => joined.length === 1 && worker.status().nextPollAt !== null);
+  await clock.tick(100);
+  await waitFor(worker, () => joined.length === 2);
+  assert.deepEqual(joined, ['started', 'fresh']);
+  worker.shutdown();
+});
+
 test('a not-dispatched queue write fails safely without reconciliation', async () => {
   const rejection = new CliCommandError({
     message: 'Request was not dispatched.',

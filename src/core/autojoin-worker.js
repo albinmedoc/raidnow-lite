@@ -29,9 +29,12 @@ function writeFailureOutcome(error) {
   return 'unknown';
 }
 
-function retryableLobbyJoin(error) {
-  if (!(error instanceof CliCommandError) || error.code !== 'UPSTREAM_REJECTION' || error.exitCode !== 7) return false;
-  return /maximum number of participants has been exceeded|\blobby is full\b/i.test(message(error));
+function lobbyJoinRejection(error) {
+  if (!(error instanceof CliCommandError) || error.code !== 'UPSTREAM_REJECTION' || error.exitCode !== 7) return null;
+  const text = message(error);
+  if (/maximum number of participants has been exceeded|\blobby is full\b/i.test(text)) return 'full';
+  if (/the host has declared the start of the raid/i.test(text)) return 'started';
+  return null;
 }
 
 function diagnosticMessage(error, operation) {
@@ -270,13 +273,15 @@ export class AutoJoinWorker extends EventEmitter {
         const definite = !WRITE_OPERATIONS.has(operation.kind)
           || writeOutcome === 'definite'
           || writeOutcome === 'not-dispatched';
+        const lobbyRejection = operation.kind === 'joinRaid' && definite ? lobbyJoinRejection(error) : null;
         return this.#dispatch({
           type: 'operationRejected',
           opId,
           error: message(error),
           status: error?.status,
           definite,
-          retryableLobbyJoin: operation.kind === 'joinRaid' && definite && retryableLobbyJoin(error)
+          retryableLobbyJoin: lobbyRejection !== null,
+          blockLobbyJoin: lobbyRejection === 'started'
         });
       })
       .catch((error) => this.emit('workerError', error))

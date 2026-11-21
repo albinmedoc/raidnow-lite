@@ -84,12 +84,13 @@ test('matched raid heartbeat clears a raid that Raid NOW confirms is gone', () =
   const cleared = reduce(checking, {
     type: 'operationSucceeded', opId: checking.operation.opId, value: null
   }).snapshot;
-  assert.equal(cleared.intent, 'idle');
-  assert.equal(cleared.search, null);
+  assert.equal(cleared.intent, 'search');
+  assert.ok(cleared.search);
   assert.equal(cleared.raid.state, 'none');
-  assert.equal(cleared.operation, null);
+  assert.equal(cleared.operation.kind, 'createQueue');
+  assert.equal(cleared.queue.state, 'creating');
   assert.equal(cleared.wake, null);
-  assert.equal(cleared.terminal.target, 'idle');
+  assert.equal(cleared.terminal.target, 'searching');
 });
 
 test('matched raid heartbeat preserves confirmed membership and retries read failures', () => {
@@ -375,6 +376,85 @@ test('raid reconciliation clears confirmed absence and resumes direct scans', ()
   assert.equal(cleared.wake.kind, 'scan');
 });
 
+test('failed queue cleanup still revalidates a matched raid', () => {
+  const matched = {
+    ...initialSnapshot(), intent: 'search',
+    search: { profile, selection: { ...selection, strategy: 'hybrid' }, nextQueuePollAt: null, attemptedRaids: {} },
+    queue: { state: 'canceling' },
+    raid: { state: 'matched', target: 'raid-1', value: { rpl_id: 'raid-1' } },
+    operation: { opId: 'cancel-1', kind: 'cancelQueue', input: {}, startedAt: now, attempt: 1 },
+    terminal: { target: 'matched', error: null }
+  };
+  const rejected = reduce(matched, {
+    type: 'operationRejected', opId: 'cancel-1', error: 'cancel rejected', definite: true
+  }).snapshot;
+  assert.equal(rejected.raid.state, 'matched');
+  assert.equal(rejected.queue.state, 'unknown');
+  assert.equal(rejected.wake.kind, 'revalidateMatched');
+
+  const validating = reduce(rejected, { type: 'wake', kind: 'revalidateMatched' }).snapshot;
+  const confirmed = reduce(validating, {
+    type: 'operationSucceeded', opId: validating.operation.opId, value: { rpl_id: 'raid-1', join: 1 }
+  }).snapshot;
+  assert.equal(confirmed.raid.state, 'matched');
+  assert.equal(confirmed.wake.kind, 'reconcileQueue');
+
+  const checking = reduce(confirmed, { type: 'wake', kind: 'reconcileQueue' }).snapshot;
+  const checkFailed = reduce(checking, {
+    type: 'operationRejected', opId: checking.operation.opId, error: 'queue read failed', definite: true
+  }).snapshot;
+  assert.equal(checkFailed.raid.state, 'matched');
+  assert.equal(checkFailed.wake.kind, 'revalidateMatched');
+});
+
+test('a vanished matched raid reconciles the queue and resumes the search', () => {
+  const verifying = {
+    ...initialSnapshot(), intent: 'search',
+    search: { profile, selection: { ...selection, strategy: 'hybrid' }, nextQueuePollAt: null, attemptedRaids: {} },
+    queue: { state: 'unknown' },
+    raid: { state: 'matched', target: 'raid-1', value: { rpl_id: 'raid-1' } },
+    operation: { opId: 'verify-1', kind: 'verifyMatched', input: { raidId: 'raid-1' }, startedAt: now, attempt: 1 },
+    terminal: { target: 'matched', error: null }
+  };
+  const vanished = reduce(verifying, { type: 'operationSucceeded', opId: 'verify-1', value: null }).snapshot;
+  assert.equal(vanished.raid.state, 'none');
+  assert.equal(vanished.wake.kind, 'reconcileQueue');
+  assert.equal(vanished.search.recovering, true);
+
+  const checking = reduce(vanished, { type: 'wake', kind: 'reconcileQueue' }).snapshot;
+  const checkFailed = reduce(checking, {
+    type: 'operationRejected', opId: checking.operation.opId, error: 'queue read failed', definite: true
+  }).snapshot;
+  assert.equal(checkFailed.queue.state, 'unknown');
+  assert.equal(checkFailed.search.recovering, true);
+  assert.equal(checkFailed.wake.kind, 'reconcileQueue');
+
+  const queueRecovered = reduce(checking, {
+    type: 'operationSucceeded', opId: checking.operation.opId, value: { id: 'queue-1' }
+  }).snapshot;
+  assert.equal(queueRecovered.queue.state, 'present');
+  assert.equal(queueRecovered.search.recovering, false);
+
+  const staleRecoveryWhileMatched = {
+    ...queueRecovered,
+    search: { ...queueRecovered.search, recovering: true },
+    queue: { state: 'unknown' },
+    raid: { state: 'matched', target: 'raid-2', value: { rpl_id: 'raid-2' } },
+    wake: null,
+    operation: { opId: 'post-match-check', kind: 'checkQueue', input: {}, startedAt: now, attempt: 1 }
+  };
+  const queueAbsentAfterMatch = reduce(staleRecoveryWhileMatched, {
+    type: 'operationSucceeded', opId: 'post-match-check', value: { id: '' }
+  }).snapshot;
+  assert.equal(queueAbsentAfterMatch.raid.state, 'matched');
+  assert.equal(queueAbsentAfterMatch.operation, null);
+  assert.equal(queueAbsentAfterMatch.wake.kind, 'revalidateMatched');
+
+  const recreated = reduce(checking, { type: 'operationSucceeded', opId: checking.operation.opId, value: { id: '' } }).snapshot;
+  assert.equal(recreated.operation.kind, 'createQueue');
+  assert.equal(recreated.queue.state, 'creating');
+});
+
 test('leave reconciliation keeps the raid visible until absence is confirmed', () => {
   const uncertain = {
     ...initialSnapshot(), intent: 'leave',
@@ -537,11 +617,11 @@ test('hybrid read failures keep direct scan cadence and queue due time', () => {
   assert.equal(pollFailed.wake.dueAt, '2026-11-11T10:00:01.000Z');
 });
 
-test('attempted direct raid candidates expire after ten seconds', () => {
+test('attempted direct raid candidates expire after thirty seconds', () => {
   const candidate = { rpl_id: 'raid-1', rpl_rank: '5', rpl_pokemon: 'Giratina' };
   const scanning = {
     ...initialSnapshot(), intent: 'search',
-    search: { profile, selection: { ...selection, strategy: 'fast' }, nextQueuePollAt: null, attemptedRaids: { 'raid-1': '2026-11-11T09:59:49.999Z' } },
+    search: { profile, selection: { ...selection, strategy: 'fast' }, nextQueuePollAt: null, attemptedRaids: { 'raid-1': '2026-11-11T09:59:29.999Z' } },
     operation: { opId: 'scan-1', kind: 'scanLobbies', input: {}, startedAt: now, attempt: 1 }
   };
   const retried = reduce(scanning, { type: 'operationSucceeded', opId: 'scan-1', value: [candidate] }).snapshot;
@@ -594,6 +674,73 @@ test('retryable full-lobby rejection resumes scanning without showing an error',
   assert.equal(rejected.lastError, null);
   assert.equal(rejected.retryCount, 0);
   assert.equal(rejected.wake.kind, 'scan');
+});
+
+test('full-lobby cooldown starts when the rejection is received', () => {
+  const joining = {
+    ...initialSnapshot(), intent: 'search',
+    search: { profile, selection: { ...selection, strategy: 'hybrid' }, nextQueuePollAt: null, attemptedRaids: { 'raid-1': now } },
+    raid: { state: 'joining', target: 'raid-1', value: { rpl_id: 'raid-1' } },
+    operation: { opId: 'join-slow', kind: 'joinRaid', input: { raidId: 'raid-1' }, startedAt: now, attempt: 1 }
+  };
+  const rejectedAt = '2026-11-11T10:00:20.000Z';
+  const rejected = reduceAutoJoin(joining, {
+    type: 'operationRejected', opId: 'join-slow', error: 'Lobby is full.',
+    definite: true, retryableLobbyJoin: true, blockLobbyJoin: false
+  }, { now: rejectedAt, pollIntervalMs: 15_000, scanIntervalMs: 1_000 }).snapshot;
+  assert.equal(rejected.search.attemptedRaids['raid-1'], rejectedAt);
+});
+
+test('full lobbies stay on cooldown for 30 seconds and unseen lobbies are preferred', () => {
+  const base = {
+    ...initialSnapshot(), intent: 'search',
+    search: { profile, selection: { ...selection, strategy: 'fast' }, nextQueuePollAt: null, attemptedRaids: { old: now } },
+    operation: { opId: 'scan-1', kind: 'scanLobbies', input: {}, startedAt: now, attempt: 1 }
+  };
+  const raids = [
+    { rpl_id: 'old', rpl_rank: '5', rpl_pokemon: 'Giratina' },
+    { rpl_id: 'new', rpl_rank: '5', rpl_pokemon: 'Giratina' }
+  ];
+  const afterTwentyNineSeconds = reduceAutoJoin(base, { type: 'operationSucceeded', opId: 'scan-1', value: raids }, {
+    now: '2026-11-11T10:00:29.000Z', pollIntervalMs: 15_000, scanIntervalMs: 1_000
+  }).snapshot;
+  assert.equal(afterTwentyNineSeconds.operation.input.raidId, 'new');
+
+  const expired = {
+    ...base,
+    operation: { opId: 'scan-2', kind: 'scanLobbies', input: {}, startedAt: now, attempt: 1 }
+  };
+  const afterThirtySeconds = reduceAutoJoin(expired, { type: 'operationSucceeded', opId: 'scan-2', value: [raids[0]] }, {
+    now: '2026-11-11T10:00:30.000Z', pollIntervalMs: 15_000, scanIntervalMs: 1_000
+  }).snapshot;
+  assert.equal(afterThirtySeconds.operation.input.raidId, 'old');
+});
+
+test('a lobby whose host started the raid stays blocked for the rest of the search', () => {
+  const joining = {
+    ...initialSnapshot(), intent: 'search',
+    search: { profile, selection: { ...selection, strategy: 'fast' }, nextQueuePollAt: null, attemptedRaids: { started: now } },
+    raid: { state: 'joining', target: 'started', value: { rpl_id: 'started' } },
+    operation: { opId: 'join-started', kind: 'joinRaid', input: { raidId: 'started' }, startedAt: now, attempt: 1 }
+  };
+  const rejected = reduce(joining, {
+    type: 'operationRejected', opId: 'join-started', error: 'The host has declared the start of the raid.',
+    definite: true, retryableLobbyJoin: true, blockLobbyJoin: true
+  }).snapshot;
+  assert.equal(rejected.search.attemptedRaids.started, 'blocked');
+
+  const scanning = {
+    ...rejected,
+    wake: null,
+    operation: { opId: 'scan-later', kind: 'scanLobbies', input: {}, startedAt: now, attempt: 1 }
+  };
+  const rescanned = reduceAutoJoin(scanning, {
+    type: 'operationSucceeded', opId: 'scan-later', value: [
+      { rpl_id: 'started', rpl_rank: '5', rpl_pokemon: 'Giratina' },
+      { rpl_id: 'fresh', rpl_rank: '5', rpl_pokemon: 'Giratina' }
+    ]
+  }, { now: '2026-11-11T11:00:00.000Z', pollIntervalMs: 15_000, scanIntervalMs: 1_000 }).snapshot;
+  assert.equal(rescanned.operation.input.raidId, 'fresh');
 });
 
 test('definite join rejection removes the candidate attempt immediately', () => {

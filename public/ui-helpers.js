@@ -40,6 +40,17 @@ export function formatRaidRating(value) {
     : { text: '★ —', title: 'Raid NOW-rating saknas' };
 }
 
+export function searchStatusDisplay(status) {
+  if (['starting', 'searching', 'joining', 'retrying'].includes(status?.state)) {
+    return {
+      title: 'Söker i bakgrunden',
+      text: 'Du står i kö samtidigt som nya lobbyer bevakas.',
+      displayState: 'searching'
+    };
+  }
+  return null;
+}
+
 export function isCurrentMatchedRaid(status, raid) {
   return status?.state === 'matched'
     && Boolean(status.raid?.rpl_id)
