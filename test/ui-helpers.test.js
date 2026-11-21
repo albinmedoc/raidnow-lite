@@ -7,7 +7,8 @@ import {
   formatRaidRating,
   formatTrainerCode,
   isCurrentMatchedRaid,
-  searchStatusDisplay
+  searchStatusDisplay,
+  shouldShowEndedRaidNotice
 } from '../public/ui-helpers.js';
 
 test('formats a trainer code into selectable four-digit groups', () => {
@@ -44,6 +45,13 @@ test('rejects stale raid details after leaving or changing raids', () => {
   assert.equal(isCurrentMatchedRaid({ state: 'idle', raid }, raid), false);
   assert.equal(isCurrentMatchedRaid({ state: 'matched', raid: { rpl_id: 'raid-2' } }, raid), false);
   assert.equal(isCurrentMatchedRaid({ state: 'matched', raid }, { rpl_id: '' }), false);
+});
+
+test('ended raid notice survives recovered SSE state but not leave or a newer match', () => {
+  assert.equal(shouldShowEndedRaidNotice('raid-old', null, 4, 4), true);
+  assert.equal(shouldShowEndedRaidNotice('raid-old', 'raid-old', 4, 4), true);
+  assert.equal(shouldShowEndedRaidNotice('raid-old', 'raid-new', 4, 4), false);
+  assert.equal(shouldShowEndedRaidNotice('raid-old', null, 4, 5), false);
 });
 
 test('discard delayed status polls after a newer status render', () => {

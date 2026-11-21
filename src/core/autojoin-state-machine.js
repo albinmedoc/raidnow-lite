@@ -164,6 +164,43 @@ function beginQueueCleanup(snapshot, now, matchedValidationIntervalMs, effects =
   return withWake({ ...snapshot, queue: { state: 'unknown' } }, 'reconcileQueue', now, 0);
 }
 
+function resumeAfterMatchedRaidEnds(snapshot, now, matchedValidationIntervalMs) {
+  if (snapshot.intent === 'leave') {
+    return beginQueueCleanup({
+      ...snapshot,
+      raid: { state: 'none', target: null, value: null },
+      operation: null,
+      lastContactAt: now,
+      retryCount: 0,
+      lastError: null
+    }, now, matchedValidationIntervalMs);
+  }
+  if (snapshot.intent === 'search' && snapshot.search) {
+    const next = {
+      ...snapshot,
+      search: { ...snapshot.search, recovering: snapshot.queue.state !== 'present' },
+      raid: { state: 'none', target: null, value: null },
+      operation: null,
+      lastContactAt: now,
+      retryCount: 0,
+      lastError: null,
+      terminal: { target: 'searching', error: null }
+    };
+    if (next.queue.state === 'present') {
+      const strategy = next.search.selection?.strategy;
+      return withWake(next, strategy === 'fast' || strategy === 'hybrid' ? 'scan' : 'pollQueue', now, 0);
+    }
+    if (next.queue.state === 'none') {
+      return withOperation({ ...next, queue: { state: 'creating' } }, 'createQueue', { profile: next.search.profile, selection: next.search.selection }, now);
+    }
+    return withWake({ ...next, queue: { state: 'unknown' } }, 'reconcileQueue', now, 0);
+  }
+  return {
+    snapshot: { ...initialSnapshot(), opSequence: snapshot.opSequence, lastContactAt: now },
+    effects: []
+  };
+}
+
 function matchRaid(snapshot, raid, now, matchedValidationIntervalMs) {
   let next = {
     ...snapshot,
@@ -302,6 +339,12 @@ export function reduceAutoJoin(current, event, config) {
     }
     if (next.operation || next.queue.state !== 'none') return beginQueueCleanup(next, now, matchedValidationIntervalMs);
     return withOperation({ ...next, raid: { ...next.raid, state: 'leaving' } }, 'leaveRaid', { raidId: next.raid.value.rpl_id }, now);
+  }
+
+  if (event.type === 'matchedRaidEnded') {
+    const currentRaidId = String(snapshot.raid.target ?? snapshot.raid.value?.rpl_id ?? '');
+    if (snapshot.raid.state !== 'matched' || String(event.raidId ?? '') !== currentRaidId) return noChange(snapshot);
+    return resumeAfterMatchedRaidEnds(snapshot, now, matchedValidationIntervalMs);
   }
 
   if (event.type === 'wake') {
@@ -494,40 +537,7 @@ export function reduceAutoJoin(current, event, config) {
         return scheduleMatchedValidation(confirmed, now, matchedValidationIntervalMs);
       }
       if (membership === 'absent') {
-        if (snapshot.intent === 'leave') {
-          return beginQueueCleanup({
-            ...snapshot,
-            raid: { state: 'none', target: null, value: null },
-            operation: null,
-            lastContactAt: now,
-            retryCount: 0,
-            lastError: null
-          }, now, matchedValidationIntervalMs);
-        }
-        if (snapshot.intent === 'search' && snapshot.search) {
-          const next = {
-            ...snapshot,
-            search: { ...snapshot.search, recovering: snapshot.queue.state !== 'present' },
-            raid: { state: 'none', target: null, value: null },
-            operation: null,
-            lastContactAt: now,
-            retryCount: 0,
-            lastError: null,
-            terminal: { target: 'searching', error: null }
-          };
-          if (next.queue.state === 'present') {
-            const strategy = next.search.selection?.strategy;
-            return withWake(next, strategy === 'fast' || strategy === 'hybrid' ? 'scan' : 'pollQueue', now, 0);
-          }
-          if (next.queue.state === 'none') {
-            return withOperation({ ...next, queue: { state: 'creating' } }, 'createQueue', { profile: next.search.profile, selection: next.search.selection }, now);
-          }
-          return withWake({ ...next, queue: { state: 'unknown' } }, 'reconcileQueue', now, 0);
-        }
-        return {
-          snapshot: { ...initialSnapshot(), opSequence: snapshot.opSequence, lastContactAt: now },
-          effects: []
-        };
+        return resumeAfterMatchedRaidEnds(snapshot, now, matchedValidationIntervalMs);
       }
       const retryCount = Number(snapshot.retryCount || 0) + 1;
       if (snapshot.intent === 'leave') {

@@ -449,6 +449,47 @@ test('refreshes exact raid details so direct matches expose the host trainer cod
   } finally { await close(app); }
 });
 
+test('ended active raid returns a recovery response and resumes the saved search', async () => {
+  const adapter = {
+    async findRaid() { return null; },
+    async listRaidPlayers() { throw new Error('Player list rejected.'); },
+    async checkMatching() { return {}; },
+    async createMatching() { return { status: 'success' }; },
+    async pollMatching() { return {}; },
+    async listRaidsForSelection() { return []; }
+  };
+  const app = await startTestApp(adapter);
+  try {
+    await app.worker.restore({
+      schemaVersion: 2,
+      intent: 'search',
+      startedAt: '2026-11-21T20:00:00.000Z',
+      search: {
+        profile: { trainerName: 'Albin123', trainerCode: '123456789012', level: 50, countryCode: 'se' },
+        selection: { strategy: 'hybrid', ranks: ['5'], pokemon: ['Giratina'] },
+        nextQueuePollAt: null,
+        attemptedRaids: {}
+      },
+      queue: { state: 'unknown' },
+      raid: { state: 'matched', target: 'raid-ended', value: { rpl_id: 'raid-ended', rpl_pokemon: 'Giratina' } },
+      operation: null,
+      wake: { kind: 'revalidateMatched', dueAt: new Date(Date.now() + 60_000).toISOString() },
+      terminal: { target: 'matched', error: null },
+      lastContactAt: null,
+      retryCount: 0,
+      lastError: null,
+      opSequence: 2
+    });
+    const response = await fetch(`${app.baseUrl}/api/active-raid`);
+    assert.equal(response.status, 410);
+    const body = await response.json();
+    assert.equal(body.code, 'RAID_ENDED');
+    assert.match(body.message, /sökningen återupptas/i);
+    assert.notEqual(app.worker.status().state, 'matched');
+    assert.deepEqual(app.worker.status().selection.pokemon, ['Giratina']);
+  } finally { await close(app); }
+});
+
 test('active raid player refresh survives an exact-detail lookup failure', async () => {
   const adapter = {
     async createMatching() { return { status: 'success' }; },

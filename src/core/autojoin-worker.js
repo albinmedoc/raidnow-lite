@@ -175,6 +175,10 @@ export class AutoJoinWorker extends EventEmitter {
     return this.#dispatch({ type: 'abandonLocal' }).then(() => this.status());
   }
 
+  matchedRaidEnded(raidId) {
+    return this.#dispatch({ type: 'matchedRaidEnded', raidId }).then(() => this.status());
+  }
+
   leaveRaid() {
     if (this.#leavePromise) return this.#leavePromise;
     const leaving = this.#dispatch({ type: 'leave' })

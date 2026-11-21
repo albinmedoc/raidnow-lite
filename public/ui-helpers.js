@@ -40,6 +40,11 @@ export function formatRaidRating(value) {
     : { text: '★ —', title: 'Raid NOW-rating saknas' };
 }
 
+export function shouldShowEndedRaidNotice(requestedRaidId, currentRaidId, requestGeneration, currentGeneration) {
+  if (!requestedRaidId || requestGeneration !== currentGeneration) return false;
+  return !currentRaidId || String(currentRaidId) === String(requestedRaidId);
+}
+
 export function applyStatusIfUnchanged(startRevision, currentRevision, status, render) {
   if (startRevision !== currentRevision) return false;
   render(status);

@@ -93,6 +93,25 @@ test('matched raid heartbeat clears a raid that Raid NOW confirms is gone', () =
   assert.equal(cleared.terminal.target, 'searching');
 });
 
+test('active raid disappearance immediately resumes search with queue reconciliation', () => {
+  const matched = {
+    ...initialSnapshot(), intent: 'search',
+    search: { profile, selection: { ...selection, strategy: 'hybrid' }, nextQueuePollAt: null, attemptedRaids: {} },
+    queue: { state: 'unknown' },
+    raid: { state: 'matched', target: 'raid-1', value: { rpl_id: 'raid-1', join: 1 } },
+    terminal: { target: 'matched', error: null }
+  };
+  const resumed = reduce(matched, { type: 'matchedRaidEnded', raidId: 'raid-1' }).snapshot;
+  assert.equal(resumed.intent, 'search');
+  assert.equal(resumed.raid.state, 'none');
+  assert.equal(resumed.search.recovering, true);
+  assert.equal(resumed.wake.kind, 'reconcileQueue');
+  assert.equal(resumed.terminal.target, 'searching');
+
+  const stale = reduce(matched, { type: 'matchedRaidEnded', raidId: 'another-raid' }).snapshot;
+  assert.deepEqual(stale, matched);
+});
+
 test('matched raid heartbeat preserves confirmed membership and retries read failures', () => {
   const matched = {
     ...initialSnapshot(),

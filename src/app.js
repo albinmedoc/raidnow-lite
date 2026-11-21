@@ -243,12 +243,22 @@ export function createApp({ adapter, store, sessionManager = null, pushNotifier 
         const status = worker.status();
         if (status.state !== 'matched' || !status.raid?.rpl_id) return sendJson(response, 404, { message: 'There is no active raid.' });
         if (!activeAdapter.listRaidPlayers) return sendJson(response, 501, { message: 'Player details are unavailable in this mode.' });
-        const [details, exactRaid] = await Promise.all([
-          activeAdapter.listRaidPlayers(status.raid.rpl_id),
-          activeAdapter.findRaid
-            ? activeAdapter.findRaid(status.raid.rpl_id).catch(() => null)
-            : null
+        const raidId = status.raid.rpl_id;
+        const [detailsResult, exactResult] = await Promise.allSettled([
+          activeAdapter.listRaidPlayers(raidId),
+          activeAdapter.findRaid ? activeAdapter.findRaid(raidId) : undefined
         ]);
+        const details = detailsResult.status === 'fulfilled' ? detailsResult.value : null;
+        const exactRaid = exactResult.status === 'fulfilled' ? exactResult.value : null;
+        const exactRaidMissing = Boolean(activeAdapter.findRaid) && exactResult.status === 'fulfilled' && exactRaid === null;
+        if (details?.raidDeleted === true || (detailsResult.status === 'rejected' && exactRaidMissing)) {
+          await worker.matchedRaidEnded(raidId);
+          return sendJson(response, 410, {
+            code: 'RAID_ENDED',
+            message: 'Raiden har avslutats. Sökningen återupptas.'
+          });
+        }
+        if (detailsResult.status === 'rejected') throw detailsResult.reason;
         const raid = exactRaid || status.raid;
         return sendJson(response, 200, { raid: enrichRaids([raid])[0], ...details, fetchedAt: new Date().toISOString() });
       }

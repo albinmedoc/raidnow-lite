@@ -1,5 +1,5 @@
 import { clearLocalProfile, loadLocalProfile, saveLocalProfile } from './profile-storage.js';
-import { applyStatusIfUnchanged, countryFlag, createBrowserResetController, formatRaidRating, isCurrentMatchedRaid, searchStatusDisplay } from './ui-helpers.js';
+import { applyStatusIfUnchanged, countryFlag, createBrowserResetController, formatRaidRating, isCurrentMatchedRaid, searchStatusDisplay, shouldShowEndedRaidNotice } from './ui-helpers.js';
 import { createTrainerCodeQrController, isValidTrainerCode } from './trainer-code-qr.js';
 import {
   catalogForWorkerView,
@@ -21,6 +21,7 @@ const state = {
   autoJoin: null,
   activeRaidId: null,
   activeRaidTimer: null,
+  activeRaidRequestGeneration: 0,
   eventSource: null,
   statusTimer: null,
   statusRefreshInFlight: false,
@@ -283,6 +284,8 @@ function setHostTrainerCode(value) {
 }
 
 async function loadActiveRaid() {
+  const requestedRaidId = state.activeRaidId;
+  const requestGeneration = state.activeRaidRequestGeneration;
   try {
     const details = await api('/api/active-raid');
     if (!isCurrentMatchedRaid(state.autoJoin, details.raid)) return;
@@ -327,6 +330,14 @@ async function loadActiveRaid() {
       const empty = document.createElement('p'); empty.className = 'muted'; empty.textContent = 'Inga spelare visas ännu.'; list.append(empty);
     }
   } catch (error) {
+    if (error.data?.code === 'RAID_ENDED') {
+      if (!shouldShowEndedRaidNotice(requestedRaidId, state.activeRaidId, requestGeneration, state.activeRaidRequestGeneration)) return;
+      $('#searchMessage').className = 'form-message search-message';
+      $('#searchMessage').textContent = 'Raiden har avslutats. Sökningen återupptas…';
+      await refreshAutoJoinStatus();
+      return;
+    }
+    if (requestedRaidId !== state.activeRaidId) return;
     $('#activeRaidMeta').textContent = `Kunde inte uppdatera raiden: ${error.message}`;
   }
 }
@@ -486,9 +497,12 @@ $('#readyRaid').addEventListener('click', async () => {
 
 $('#leaveRaid').addEventListener('click', async () => {
   if (!window.confirm('Vill du lämna den aktiva raiden?')) return;
+  state.activeRaidRequestGeneration += 1;
   const button = $('#leaveRaid'); button.disabled = true;
   try {
-    renderStatus(await api('/api/active-raid/leave', { method: 'POST', body: '{}' }));
+    const status = await api('/api/active-raid/leave', { method: 'POST', body: '{}' });
+    state.activeRaidRequestGeneration += 1;
+    renderStatus(status);
     $('#searchMessage').className = 'form-message'; $('#searchMessage').textContent = 'Du har lämnat raiden.';
   } catch (error) {
     $('#activeRaidMeta').textContent = `Kunde inte lämna raiden: ${error.message}`;
