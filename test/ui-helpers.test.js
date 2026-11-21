@@ -8,7 +8,9 @@ import {
   formatTrainerCode,
   isCurrentMatchedRaid,
   searchStatusDisplay,
-  shouldShowEndedRaidNotice
+  shouldShowEndedRaidNotice,
+  leaveCompletionDisplay,
+  mutationStatusDecision
 } from '../public/ui-helpers.js';
 
 test('formats a trainer code into selectable four-digit groups', () => {
@@ -45,6 +47,22 @@ test('rejects stale raid details after leaving or changing raids', () => {
   assert.equal(isCurrentMatchedRaid({ state: 'idle', raid }, raid), false);
   assert.equal(isCurrentMatchedRaid({ state: 'matched', raid: { rpl_id: 'raid-2' } }, raid), false);
   assert.equal(isCurrentMatchedRaid({ state: 'matched', raid }, { rpl_id: '' }), false);
+});
+
+test('leave completion waits for residual queue cleanup before unlocking choices', () => {
+  assert.deepEqual(leaveCompletionDisplay({ state: 'reconciling' }), {
+    complete: false,
+    text: 'Raiden är avslutad i Lite. Raid NOW-kön städas innan du kan söka igen.'
+  });
+  assert.deepEqual(leaveCompletionDisplay({ state: 'idle' }), {
+    complete: true,
+    text: 'Raiden är avslutad i Lite. Du kan ändra valen och söka igen.'
+  });
+});
+
+test('mutation completion invalidates older polls without overwriting a newer SSE status', () => {
+  assert.deepEqual(mutationStatusDecision(4, 4), { apply: true, nextRevision: 5 });
+  assert.deepEqual(mutationStatusDecision(4, 5), { apply: false, nextRevision: 6 });
 });
 
 test('ended raid notice survives recovered SSE state but not leave or a newer match', () => {

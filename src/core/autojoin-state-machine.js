@@ -418,6 +418,17 @@ export function reduceAutoJoin(current, event, config) {
       return withWake(next, 'scan', now, scanIntervalMs);
     }
     if (kind === 'leaveRaid') {
+      if (event.definite && event.raidAlreadyStarted) {
+        return beginQueueCleanup({
+          ...snapshot,
+          raid: { state: 'none', target: null, value: null },
+          operation: null,
+          lastContactAt: now,
+          retryCount: 0,
+          lastError: null,
+          terminal: { target: 'idle', error: null }
+        }, now, matchedValidationIntervalMs);
+      }
       if (!event.definite) return withWake({ ...snapshot, raid: { ...snapshot.raid, state: 'unknown' }, operation: null, lastError: message }, 'reconcileRaid', now, pollIntervalMs);
       return scheduleMatchedValidation({
         ...snapshot,

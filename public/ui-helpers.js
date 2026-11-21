@@ -40,6 +40,23 @@ export function formatRaidRating(value) {
     : { text: '★ —', title: 'Raid NOW-rating saknas' };
 }
 
+export function leaveCompletionDisplay(status) {
+  const complete = ['idle', 'stopped'].includes(status?.state);
+  return {
+    complete,
+    text: complete
+      ? 'Raiden är avslutad i Lite. Du kan ändra valen och söka igen.'
+      : 'Raiden är avslutad i Lite. Raid NOW-kön städas innan du kan söka igen.'
+  };
+}
+
+export function mutationStatusDecision(startRevision, currentRevision) {
+  return {
+    apply: startRevision === currentRevision,
+    nextRevision: currentRevision + 1
+  };
+}
+
 export function shouldShowEndedRaidNotice(requestedRaidId, currentRaidId, requestGeneration, currentGeneration) {
   if (!requestedRaidId || requestGeneration !== currentGeneration) return false;
   return !currentRaidId || String(currentRaidId) === String(requestedRaidId);

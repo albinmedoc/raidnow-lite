@@ -37,6 +37,17 @@ function lobbyJoinRejection(error) {
   return null;
 }
 
+export function leaveRaidRejection(error) {
+  if (!(error instanceof CliCommandError) || error.code !== 'UPSTREAM_REJECTION' || error.exitCode !== 7) return null;
+  const upstream = message(error)
+    .trim()
+    .replace(/^Upstream avvisade begäran:\s*/i, '')
+    .replace(/\.\s*$/, '')
+    .trim()
+    .toLowerCase();
+  return upstream === 'the raid has been declared started and you cannot leave' ? 'started' : null;
+}
+
 function diagnosticMessage(error, operation) {
   let value = message(error).replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 512);
   const trainerCode = operation.input?.profile?.trainerCode;
@@ -278,6 +289,7 @@ export class AutoJoinWorker extends EventEmitter {
           || writeOutcome === 'definite'
           || writeOutcome === 'not-dispatched';
         const lobbyRejection = operation.kind === 'joinRaid' && definite ? lobbyJoinRejection(error) : null;
+        const raidLeaveRejection = operation.kind === 'leaveRaid' && definite ? leaveRaidRejection(error) : null;
         return this.#dispatch({
           type: 'operationRejected',
           opId,
@@ -285,7 +297,8 @@ export class AutoJoinWorker extends EventEmitter {
           status: error?.status,
           definite,
           retryableLobbyJoin: lobbyRejection !== null,
-          blockLobbyJoin: lobbyRejection === 'started'
+          blockLobbyJoin: lobbyRejection === 'started',
+          raidAlreadyStarted: raidLeaveRejection === 'started'
         });
       })
       .catch((error) => this.emit('workerError', error))

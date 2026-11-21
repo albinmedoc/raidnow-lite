@@ -1,5 +1,5 @@
 import { clearLocalProfile, loadLocalProfile, saveLocalProfile } from './profile-storage.js';
-import { applyStatusIfUnchanged, countryFlag, createBrowserResetController, formatRaidRating, isCurrentMatchedRaid, searchStatusDisplay, shouldShowEndedRaidNotice } from './ui-helpers.js';
+import { applyStatusIfUnchanged, countryFlag, createBrowserResetController, formatRaidRating, isCurrentMatchedRaid, leaveCompletionDisplay, mutationStatusDecision, searchStatusDisplay, shouldShowEndedRaidNotice } from './ui-helpers.js';
 import { createTrainerCodeQrController, isValidTrainerCode } from './trainer-code-qr.js';
 import {
   catalogForWorkerView,
@@ -26,6 +26,7 @@ const state = {
   statusTimer: null,
   statusRefreshInFlight: false,
   statusRevision: 0,
+  leaveCompletionPending: false,
   pendingStart: false,
   fetchedAt: null,
   staleWarningCount: 0
@@ -375,6 +376,14 @@ function applySelectionPreferences(status) {
   $('#weatherBoost').value = String(preferences.weatherBoost ?? 0);
 }
 
+function renderLeaveCompletion(status) {
+  if (!state.leaveCompletionPending) return;
+  const display = leaveCompletionDisplay(status);
+  $('#searchMessage').className = 'form-message search-message';
+  $('#searchMessage').textContent = display.text;
+  if (display.complete) state.leaveCompletionPending = false;
+}
+
 function renderStatus(status) {
   state.statusRevision += 1;
   state.autoJoin = status;
@@ -410,6 +419,7 @@ function renderStatus(status) {
   const reconciliation = reconcileCurrentSelection();
   renderRaids();
   renderSelectionDetail(reconciliation);
+  renderLeaveCompletion(status);
   updateControls();
 }
 
@@ -498,12 +508,19 @@ $('#readyRaid').addEventListener('click', async () => {
 $('#leaveRaid').addEventListener('click', async () => {
   if (!window.confirm('Vill du lämna den aktiva raiden?')) return;
   state.activeRaidRequestGeneration += 1;
+  const leaveRevision = state.statusRevision;
   const button = $('#leaveRaid'); button.disabled = true;
   try {
     const status = await api('/api/active-raid/leave', { method: 'POST', body: '{}' });
     state.activeRaidRequestGeneration += 1;
-    renderStatus(status);
-    $('#searchMessage').className = 'form-message'; $('#searchMessage').textContent = 'Du har lämnat raiden.';
+    state.leaveCompletionPending = true;
+    const decision = mutationStatusDecision(leaveRevision, state.statusRevision);
+    state.statusRevision = decision.nextRevision;
+    if (decision.apply) {
+      renderStatus(status);
+    } else {
+      renderLeaveCompletion(state.autoJoin);
+    }
   } catch (error) {
     $('#activeRaidMeta').textContent = `Kunde inte lämna raiden: ${error.message}`;
   } finally { button.disabled = false; }

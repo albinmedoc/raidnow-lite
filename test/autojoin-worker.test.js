@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AutoJoinWorker } from '../src/core/autojoin-worker.js';
+import { AutoJoinWorker, leaveRaidRejection } from '../src/core/autojoin-worker.js';
 import { initialSnapshot } from '../src/core/autojoin-state-machine.js';
 import { RaidNowAdapter } from '../src/adapters/raidnow-adapter.js';
 import { CliCommandError } from '../src/adapters/cli-process-runner.js';
@@ -339,6 +339,95 @@ test('leave proceeds to raid reconciliation after an in-flight queue cancellatio
   assert.equal(status.state, 'reconciling');
   assert.equal(status.queueCancelPending, true);
   worker.shutdown();
+});
+
+test('a started raid that cannot be left is dismissed locally so a new search can be configured', async () => {
+  const clock = new FakeClock();
+  const rejection = new CliCommandError({
+    message: 'Upstream avvisade begäran: The raid has been declared started and you cannot leave.',
+    code: 'UPSTREAM_REJECTION', exitCode: 7, command: 'raid leave', status: 'rejected'
+  });
+  const worker = new AutoJoinWorker({
+    adapter: { async leaveRaid() { throw rejection; } },
+    clock,
+    pollIntervalMs: 100,
+    persist: async () => {}
+  });
+  await worker.restore({
+    ...initialSnapshot(),
+    intent: 'idle',
+    search: { profile, selection: { ...selection, strategy: 'hybrid' }, nextQueuePollAt: null, attemptedRaids: {} },
+    queue: { state: 'none' },
+    raid: { state: 'matched', target: 'raid-started', value: { rpl_id: 'raid-started' } },
+    terminal: { target: 'matched', error: null },
+    wake: { kind: 'revalidateMatched', dueAt: new Date(clock.now() + 60_000).toISOString() }
+  });
+
+  const status = await worker.leaveRaid();
+  assert.equal(status.state, 'idle');
+  assert.equal(status.raid, null);
+  assert.equal(status.selection, null);
+  worker.shutdown();
+});
+
+test('a longer leave rejection containing the started phrase is not treated as local completion', async () => {
+  const clock = new FakeClock();
+  const rejection = new CliCommandError({
+    message: 'Upstream avvisade begäran: Temporary validation failed after The raid has been declared started and you cannot leave.',
+    code: 'UPSTREAM_REJECTION', exitCode: 7, command: 'raid leave', status: 'rejected'
+  });
+  const worker = new AutoJoinWorker({
+    adapter: { async leaveRaid() { throw rejection; }, async findRaid() { return { rpl_id: 'raid-started', join: 1 }; } },
+    clock,
+    matchedValidationIntervalMs: 100,
+    persist: async () => {}
+  });
+  await worker.restore({
+    ...initialSnapshot(),
+    intent: 'idle',
+    search: { profile, selection: { ...selection, strategy: 'hybrid' }, nextQueuePollAt: null, attemptedRaids: {} },
+    queue: { state: 'none' },
+    raid: { state: 'matched', target: 'raid-started', value: { rpl_id: 'raid-started' } },
+    terminal: { target: 'matched', error: null },
+    wake: { kind: 'revalidateMatched', dueAt: new Date(clock.now() + 60_000).toISOString() }
+  });
+
+  await assert.rejects(() => worker.leaveRaid(), /Temporary validation failed/);
+  assert.equal(worker.status().state, 'matched');
+  assert.equal(worker.status().raid.rpl_id, 'raid-started');
+  worker.shutdown();
+});
+
+test('started-raid local completion requires the exact typed rejection boundary', () => {
+  const cases = [
+    {
+      name: 'altered punctuation',
+      error: new CliCommandError({
+        message: 'Upstream avvisade begäran: The raid has been declared started and you cannot leave!',
+        code: 'UPSTREAM_REJECTION', exitCode: 7, command: 'raid leave', status: 'rejected'
+      })
+    },
+    {
+      name: 'wrong stable code',
+      error: new CliCommandError({
+        message: 'Upstream avvisade begäran: The raid has been declared started and you cannot leave.',
+        code: 'UNKNOWN_WRITE_RESULT', exitCode: 7, command: 'raid leave', status: 'unknown'
+      })
+    },
+    {
+      name: 'wrong exit code',
+      error: new CliCommandError({
+        message: 'Upstream avvisade begäran: The raid has been declared started and you cannot leave.',
+        code: 'UPSTREAM_REJECTION', exitCode: 9, command: 'raid leave', status: 'rejected'
+      })
+    },
+    {
+      name: 'untyped error',
+      error: new Error('Upstream avvisade begäran: The raid has been declared started and you cannot leave.')
+    }
+  ];
+
+  for (const item of cases) assert.equal(leaveRaidRejection(item.error), null, item.name);
 });
 
 test('leave proceeds to raid reconciliation after an in-flight queue cancellation fails', async () => {
