@@ -1,5 +1,5 @@
 import { clearLocalProfile, loadLocalProfile, saveLocalProfile } from './profile-storage.js';
-import { countryFlag, createBrowserResetController, formatRaidRating, isCurrentMatchedRaid, searchStatusDisplay } from './ui-helpers.js';
+import { applyStatusIfUnchanged, countryFlag, createBrowserResetController, formatRaidRating, isCurrentMatchedRaid, searchStatusDisplay } from './ui-helpers.js';
 import { createTrainerCodeQrController, isValidTrainerCode } from './trainer-code-qr.js';
 import {
   catalogForWorkerView,
@@ -22,6 +22,9 @@ const state = {
   activeRaidId: null,
   activeRaidTimer: null,
   eventSource: null,
+  statusTimer: null,
+  statusRefreshInFlight: false,
+  statusRevision: 0,
   pendingStart: false,
   fetchedAt: null,
   staleWarningCount: 0
@@ -362,6 +365,7 @@ function applySelectionPreferences(status) {
 }
 
 function renderStatus(status) {
+  state.statusRevision += 1;
   state.autoJoin = status;
   applySelectionPreferences(status);
   const labels = {
@@ -625,12 +629,32 @@ $('#weatherBoost').addEventListener('change', persistSelection);
 $('#settingsButton').addEventListener('click', () => $('#profileDialog').showModal());
 $('#filterButton').addEventListener('click', () => $('#filterDialog').showModal());
 
+async function refreshAutoJoinStatus() {
+  if (state.statusRefreshInFlight) return;
+  state.statusRefreshInFlight = true;
+  const startRevision = state.statusRevision;
+  try {
+    const status = await api('/api/autojoin/status');
+    applyStatusIfUnchanged(startRevision, state.statusRevision, status, renderStatus);
+  } catch {
+    // SSE remains the primary channel; the next poll or reconnect retries.
+  } finally {
+    state.statusRefreshInFlight = false;
+  }
+}
+
+function startStatusPolling() {
+  if (!state.statusTimer) state.statusTimer = setInterval(refreshAutoJoinStatus, 5_000);
+}
+
 function closeBrowserResources() {
   const events = state.eventSource;
   if (events) events.close();
   if (state.activeRaidTimer) clearInterval(state.activeRaidTimer);
+  if (state.statusTimer) clearInterval(state.statusTimer);
   state.eventSource = null;
   state.activeRaidTimer = null;
+  state.statusTimer = null;
 }
 
 function resumeBrowserResources() {
@@ -665,14 +689,21 @@ $('#resetBrowser').addEventListener('click', async () => {
 });
 
 function connectEvents() {
+  startStatusPolling();
   if (state.eventSource) return;
   const events = new EventSource('/api/events');
   state.eventSource = events;
+  events.addEventListener('open', refreshAutoJoinStatus);
   events.addEventListener('status', (event) => renderStatus(JSON.parse(event.data)));
   events.addEventListener('matched', () => {
     // Server-side Web Push owns background notifications; SSE only updates the visible UI.
   });
 }
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) refreshAutoJoinStatus();
+});
+window.addEventListener('focus', refreshAutoJoinStatus);
 
 async function init() {
   state.config = await api('/api/config');

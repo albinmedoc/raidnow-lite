@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   countryFlag,
   createBrowserResetController,
+  applyStatusIfUnchanged,
   formatRaidRating,
   formatTrainerCode,
   isCurrentMatchedRaid,
@@ -43,6 +44,14 @@ test('rejects stale raid details after leaving or changing raids', () => {
   assert.equal(isCurrentMatchedRaid({ state: 'idle', raid }, raid), false);
   assert.equal(isCurrentMatchedRaid({ state: 'matched', raid: { rpl_id: 'raid-2' } }, raid), false);
   assert.equal(isCurrentMatchedRaid({ state: 'matched', raid }, { rpl_id: '' }), false);
+});
+
+test('discard delayed status polls after a newer status render', () => {
+  const applied = [];
+  assert.equal(applyStatusIfUnchanged(4, 5, { state: 'reconciling' }, (status) => applied.push(status)), false);
+  assert.deepEqual(applied, []);
+  assert.equal(applyStatusIfUnchanged(5, 5, { state: 'idle' }, (status) => applied.push(status)), true);
+  assert.deepEqual(applied, [{ state: 'idle' }]);
 });
 
 test('keeps the visible search status stable while internal work changes', () => {

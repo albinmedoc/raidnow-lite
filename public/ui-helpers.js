@@ -40,6 +40,12 @@ export function formatRaidRating(value) {
     : { text: '★ —', title: 'Raid NOW-rating saknas' };
 }
 
+export function applyStatusIfUnchanged(startRevision, currentRevision, status, render) {
+  if (startRevision !== currentRevision) return false;
+  render(status);
+  return true;
+}
+
 export function searchStatusDisplay(status) {
   if (['starting', 'searching', 'joining', 'retrying'].includes(status?.state)) {
     return {

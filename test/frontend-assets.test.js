@@ -48,10 +48,20 @@ test('PWA manifest and HTML expose installable Swedish metadata and local icons'
   assert.ok(icon512.length > 1000);
 });
 
+test('browser periodically reconciles status when an SSE update is missed', async () => {
+  const source = await asset('app.js');
+  assert.match(source, /async function refreshAutoJoinStatus/);
+  assert.match(source, /api\('\/api\/autojoin\/status'\)/);
+  assert.match(source, /setInterval\(refreshAutoJoinStatus, 5_000\)/);
+  assert.match(source, /applyStatusIfUnchanged\(startRevision, state\.statusRevision, status, renderStatus\)/);
+  assert.match(source, /visibilitychange/);
+  assert.match(source, /clearInterval\(state\.statusTimer\)/);
+});
+
 test('service worker caches only an explicit shell and bypasses APIs, SSE, mutations, and external images', async () => {
   const source = await asset('service-worker.js');
-  assert.match(source, /raidnow-shell-v12/);
-  assert.doesNotMatch(source, /raidnow-shell-v11/);
+  assert.match(source, /raidnow-shell-v13/);
+  assert.doesNotMatch(source, /raidnow-shell-v12/);
   assert.match(source, /const SHELL_ASSETS = \[/);
   assert.match(source, /request\.method !== 'GET'/);
   assert.match(source, /url\.origin !== self\.location\.origin/);
