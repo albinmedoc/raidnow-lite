@@ -21,6 +21,8 @@ export function initialSnapshot() {
     lastContactAt: null,
     retryCount: 0,
     lastError: null,
+    abandonQueueAfterLeave: false,
+    leaveQueueCancelRejections: 0,
     opSequence: 0
   };
 }
@@ -116,10 +118,10 @@ function selectedRaid(snapshot, raids, now) {
 function terminalize(snapshot) {
   if (snapshot.queue.state !== 'none' || snapshot.raid.state !== 'none' || snapshot.operation) return snapshot;
   if (snapshot.intent === 'leave') {
-    return { ...snapshot, intent: 'idle', search: null, terminal: { target: 'idle', error: null }, retryCount: 0, lastError: null };
+    return { ...snapshot, intent: 'idle', search: null, terminal: { target: 'idle', error: null }, retryCount: 0, lastError: null, abandonQueueAfterLeave: false, leaveQueueCancelRejections: 0 };
   }
   if (snapshot.intent === 'stop') {
-    return { ...snapshot, search: null, terminal: { target: 'stopped', error: snapshot.terminal.error }, retryCount: 0, lastError: null };
+    return { ...snapshot, search: null, terminal: { target: 'stopped', error: snapshot.terminal.error }, retryCount: 0, lastError: null, abandonQueueAfterLeave: false, leaveQueueCancelRejections: 0 };
   }
   return snapshot;
 }
@@ -261,10 +263,10 @@ export function reduceAutoJoin(current, event, config) {
 
   if (event.type === 'stop') {
     if (snapshot.raid.state === 'matched') {
-      const next = { ...snapshot, intent: snapshot.queue.state === 'none' ? snapshot.intent : 'stop' };
+      const next = { ...snapshot, intent: snapshot.queue.state === 'none' ? snapshot.intent : 'stop', abandonQueueAfterLeave: false, leaveQueueCancelRejections: 0 };
       return beginQueueCleanup(next, now, matchedValidationIntervalMs);
     }
-    let next = { ...snapshot, intent: 'stop', terminal: { target: 'stopped', error: null }, wake: null };
+    let next = { ...snapshot, intent: 'stop', terminal: { target: 'stopped', error: null }, wake: null, abandonQueueAfterLeave: false, leaveQueueCancelRejections: 0 };
     if (next.operation?.kind === 'createQueue') {
       next.queue = { state: 'unknown' };
       return { snapshot: next, effects: [{ type: 'abort', opId: next.operation.opId }] };
@@ -286,7 +288,13 @@ export function reduceAutoJoin(current, event, config) {
     if (!snapshot.raid.value?.rpl_id || !['matched', 'unknown'].includes(snapshot.raid.state)) {
       return { snapshot, effects: [{ type: 'reject', error: 'There is no active raid to leave.' }] };
     }
-    const next = { ...snapshot, intent: 'leave', terminal: { target: 'idle', error: null } };
+    const next = {
+      ...snapshot,
+      intent: 'leave',
+      terminal: { target: 'idle', error: null },
+      abandonQueueAfterLeave: true,
+      leaveQueueCancelRejections: 0
+    };
     if (next.operation && LEAVE_PREEMPTIBLE_READ_KINDS.has(next.operation.kind)) {
       const opId = next.operation.opId;
       next.operation = null;
@@ -317,15 +325,30 @@ export function reduceAutoJoin(current, event, config) {
       return withWake({ ...snapshot, queue: { state: 'unknown' }, operation: null, intent: snapshot.intent === 'search' ? 'stop' : snapshot.intent, terminal: { target: snapshot.intent === 'stop' ? 'stopped' : 'error', error: message }, lastError: message }, 'reconcileQueue', now, pollIntervalMs);
     }
     if (kind === 'cancelQueue') {
-      const next = { ...snapshot, queue: { state: 'unknown' }, operation: null, retryCount: Number(snapshot.retryCount || 0) + 1, lastError: message };
+      const abandonAfterLeave = snapshot.abandonQueueAfterLeave === true && snapshot.intent === 'stop' && snapshot.raid.state === 'none';
+      const leaveQueueCancelRejections = Number(snapshot.leaveQueueCancelRejections || 0) + (abandonAfterLeave && event.definite ? 1 : 0);
+      const next = {
+        ...snapshot,
+        queue: { state: 'unknown' },
+        operation: null,
+        retryCount: Number(snapshot.retryCount || 0) + 1,
+        leaveQueueCancelRejections,
+        lastError: abandonAfterLeave ? null : message
+      };
       if (next.intent === 'leave' && ['matched', 'unknown'].includes(next.raid.state)) {
         return beginQueueCleanup(next, now, matchedValidationIntervalMs);
       }
       if (next.intent === 'search' && next.raid.state === 'matched') {
         return scheduleMatchedValidation(next, now, matchedValidationIntervalMs);
       }
-      if (next.intent === 'stop' && next.raid.state === 'none' && next.retryCount >= 3) {
-        return { snapshot: { ...next, wake: null }, effects: [] };
+      if (next.intent === 'stop' && next.raid.state === 'none') {
+        if (abandonAfterLeave) {
+          if (event.definite && next.leaveQueueCancelRejections >= 3) {
+            return { snapshot: { ...initialSnapshot(), opSequence: next.opSequence }, effects: [] };
+          }
+          return withWake(next, 'reconcileQueue', now, pollIntervalMs);
+        }
+        if (next.retryCount >= 3) return { snapshot: { ...next, wake: null }, effects: [] };
       }
       return withWake(next, 'reconcileQueue', now, pollIntervalMs);
     }
@@ -358,6 +381,8 @@ export function reduceAutoJoin(current, event, config) {
         raid: { ...snapshot.raid, state: 'matched' },
         operation: null,
         intent: 'idle',
+        abandonQueueAfterLeave: false,
+        leaveQueueCancelRejections: 0,
         terminal: { target: 'matched', error: message },
         lastError: message
       }, now, matchedValidationIntervalMs);
@@ -615,6 +640,11 @@ export function migrateSnapshot(saved, config) {
   if (!saved) return initialSnapshot();
   if (saved.schemaVersion === 2) {
     let next = { ...initialSnapshot(), ...clone(saved) };
+    next.abandonQueueAfterLeave = next.abandonQueueAfterLeave === true;
+    const leaveQueueCancelRejections = Number(next.leaveQueueCancelRejections);
+    next.leaveQueueCancelRejections = next.abandonQueueAfterLeave && Number.isInteger(leaveQueueCancelRejections)
+      ? Math.min(2, Math.max(0, leaveQueueCancelRejections))
+      : 0;
     if (next.search?.selection) next.search.selection = normalizeRestoredSearchSelection(next.search.selection);
     if (next.search) next.search.directScanDisabled = next.search.directScanDisabled === true;
     const op = next.operation;

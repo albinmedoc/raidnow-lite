@@ -177,6 +177,7 @@ test('leave requested during matched validation launches leave after join=1 conf
     type: 'operationSucceeded', opId: checking.operation.opId, value: { rpl_id: 'raid-1', join: 1 }
   }).snapshot;
   assert.equal(leaving.intent, 'leave');
+  assert.equal(leaving.abandonQueueAfterLeave, true);
   assert.equal(leaving.raid.state, 'leaving');
   assert.equal(leaving.operation.kind, 'leaveRaid');
 });
@@ -231,6 +232,18 @@ test('cancel success requires a subsequent absence check before queue unlocks', 
   snapshot = reduce(snapshot, { type: 'operationSucceeded', opId: snapshot.operation.opId, value: {} }).snapshot;
   assert.equal(snapshot.queue.state, 'none');
   assert.equal(snapshot.operation, null);
+});
+
+test('migration normalizes leave cleanup counters independently from shared retries', () => {
+  const disabled = migrateSnapshot({
+    ...initialSnapshot(), schemaVersion: 2, abandonQueueAfterLeave: false, leaveQueueCancelRejections: 2
+  }, { now, pollIntervalMs: 15_000 });
+  assert.equal(disabled.leaveQueueCancelRejections, 0);
+
+  const bounded = migrateSnapshot({
+    ...initialSnapshot(), schemaVersion: 2, abandonQueueAfterLeave: true, leaveQueueCancelRejections: 99
+  }, { now, pollIntervalMs: 15_000 });
+  assert.equal(bounded.leaveQueueCancelRejections, 2);
 });
 
 test('restore converts each in-flight write to conservative uncertainty', () => {
@@ -481,6 +494,67 @@ test('raid reconciliation failure stays locked and retries', () => {
   assert.equal(failed.raid.value.rpl_id, 'raid-1');
   assert.equal(failed.wake.kind, 'reconcileRaid');
   assert.equal(failed.lastError, 'lookup unavailable');
+});
+
+test('completed raid leave silently releases residual queue uncertainty after three definite rejections', () => {
+  const cleanup = {
+    ...initialSnapshot(), intent: 'stop', retryCount: 2, abandonQueueAfterLeave: true, leaveQueueCancelRejections: 2, opSequence: 9,
+    search: { profile, selection, nextQueuePollAt: null, attemptedRaids: {} },
+    queue: { state: 'canceling' },
+    raid: { state: 'none', target: null, value: null },
+    operation: { opId: 'cancel-after-leave', kind: 'cancelQueue', input: {}, startedAt: now, attempt: 3 },
+    terminal: { target: 'stopped', error: null }
+  };
+  const completed = reduce(cleanup, {
+    type: 'operationRejected', opId: 'cancel-after-leave', error: 'upstream rejected cancel', definite: true
+  }).snapshot;
+  assert.equal(completed.intent, 'idle');
+  assert.equal(completed.queue.state, 'none');
+  assert.equal(completed.search, null);
+  assert.equal(completed.lastError, null);
+  assert.equal(completed.opSequence, 9);
+
+  const firstRetry = reduce({ ...cleanup, retryCount: 0, leaveQueueCancelRejections: 0 }, {
+    type: 'operationRejected', opId: 'cancel-after-leave', error: 'upstream rejected cancel', definite: true
+  }).snapshot;
+  assert.equal(firstRetry.intent, 'stop');
+  assert.equal(firstRetry.wake.kind, 'reconcileQueue');
+  assert.equal(firstRetry.lastError, null);
+  assert.equal(firstRetry.leaveQueueCancelRejections, 1);
+
+  const uncertain = reduce({ ...cleanup, retryCount: 9, leaveQueueCancelRejections: 2 }, {
+    type: 'operationRejected', opId: 'cancel-after-leave', error: 'cancel outcome unknown', definite: false
+  }).snapshot;
+  assert.equal(uncertain.intent, 'stop');
+  assert.equal(uncertain.queue.state, 'unknown');
+  assert.equal(uncertain.leaveQueueCancelRejections, 2);
+  assert.equal(uncertain.search.profile.trainerName, profile.trainerName);
+
+  const unrelatedRetries = reduce({ ...cleanup, retryCount: 9, leaveQueueCancelRejections: 0 }, {
+    type: 'operationRejected', opId: 'cancel-after-leave', error: 'upstream rejected cancel', definite: true
+  }).snapshot;
+  assert.equal(unrelatedRetries.intent, 'stop');
+  assert.equal(unrelatedRetries.leaveQueueCancelRejections, 1);
+  assert.ok(unrelatedRetries.search);
+});
+
+test('ordinary stop uncertainty still requires explicit local abandonment', () => {
+  const stopping = {
+    ...initialSnapshot(), intent: 'stop', retryCount: 2,
+    search: { profile, selection, nextQueuePollAt: null, attemptedRaids: {} },
+    queue: { state: 'canceling' },
+    raid: { state: 'none', target: null, value: null },
+    operation: { opId: 'cancel-stop', kind: 'cancelQueue', input: {}, startedAt: now, attempt: 3 },
+    terminal: { target: 'stopped', error: null }
+  };
+  const rejected = reduce(stopping, {
+    type: 'operationRejected', opId: 'cancel-stop', error: 'upstream rejected cancel', definite: true
+  }).snapshot;
+  assert.equal(rejected.intent, 'stop');
+  assert.equal(rejected.queue.state, 'unknown');
+  assert.equal(rejected.retryCount, 3);
+  assert.equal(rejected.wake, null);
+  assert.equal(rejected.lastError, 'upstream rejected cancel');
 });
 
 test('local abandonment clears only repeated stop uncertainty without a raid', () => {
