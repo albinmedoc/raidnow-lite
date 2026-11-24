@@ -40,13 +40,29 @@ export function formatRaidRating(value) {
     : { text: '★ —', title: 'Raid NOW-rating saknas' };
 }
 
-export function leaveCompletionDisplay(status) {
-  const complete = ['idle', 'stopped'].includes(status?.state);
+export function workflowStatusPresentation(status) {
+  const notice = status?.workflowNotice;
+  if (typeof status?.error === 'string' && status.error) {
+    return {
+      title: 'Sökningen misslyckades',
+      text: status.error,
+      displayState: 'error'
+    };
+  }
+  if (!notice || typeof notice.message !== 'string' || !notice.message) return null;
+  const titles = {
+    'leave-unavailable': 'Kunde inte lämna raiden',
+    'leave-failed': 'Kunde inte lämna raiden',
+    'raid-reconciliation-failed': 'Raiden behöver återställas',
+    'leave-cleanup': 'Raiden lämnas',
+    'leave-complete': 'Raiden är avslutad',
+    'raid-ended': 'Raiden avslutades'
+  };
+  const displayStates = { error: 'error', success: 'stopped', info: 'reconciling' };
   return {
-    complete,
-    text: complete
-      ? 'Raiden är avslutad i Lite. Du kan ändra valen och söka igen.'
-      : 'Raiden är avslutad i Lite. Raid NOW-kön städas innan du kan söka igen.'
+    title: titles[notice.kind] || 'Auto Join-status',
+    text: notice.message,
+    displayState: displayStates[notice.severity] || 'reconciling'
   };
 }
 
@@ -83,4 +99,36 @@ export function isCurrentMatchedRaid(status, raid) {
   return status?.state === 'matched'
     && Boolean(status.raid?.rpl_id)
     && status.raid.rpl_id === raid?.rpl_id;
+}
+
+export function isActiveRaidRequestCurrent(requestedRaidId, currentRaidId, requestGeneration, currentGeneration) {
+  if (!requestedRaidId || requestGeneration !== currentGeneration) return false;
+  return String(currentRaidId || '') === String(requestedRaidId);
+}
+
+export async function loadActiveRaidDetailsIfCurrent({
+  requestDetails,
+  requestedRaidId,
+  requestGeneration,
+  current
+}) {
+  const details = await requestDetails();
+  const latest = current();
+  if (!isActiveRaidRequestCurrent(
+    requestedRaidId,
+    latest?.activeRaidId,
+    requestGeneration,
+    latest?.requestGeneration
+  )) return null;
+  return isCurrentMatchedRaid(latest?.status, details?.raid) ? details : null;
+}
+
+export function activeRaidPresentation(status) {
+  const matchedRaid = status?.state === 'matched' && ['matched', 'leaving'].includes(status?.raidMembership) && status.raid?.rpl_id
+    ? status.raid
+    : null;
+  const recoveryRaid = !matchedRaid && status?.canRequestLeave && status.raid?.rpl_id
+    ? status.raid
+    : null;
+  return { matchedRaid, recoveryRaid };
 }

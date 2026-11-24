@@ -176,6 +176,20 @@ test('maps every worker operation to the primitive CLI command', async () => {
   assert.equal(runner.calls.flatMap((call) => call.args).includes(profile.trainerCode), false);
 });
 
+test('rejects every non-boolean queue presence value as a protocol error', async () => {
+  for (const present of ['false', 0, 1, null, {}, []]) {
+    const { adapter } = createAdapter([
+      success('queue check', { present, id: 'queue-ghost', waiting: [] }, 'present')
+    ]);
+
+    await assert.rejects(
+      () => adapter.checkMatching({ selection }),
+      (error) => error.code === 'CLI_PROTOCOL_ERROR'
+        && error.message === 'The CLI returned an invalid response.'
+    );
+  }
+});
+
 test('translates normalized raids into the complete legacy worker shape', async () => {
   const source = {
     id: 'raid-1', rank: 'mega', pokemonId: '6_x', hostName: 'Host', hostLevel: 47,
@@ -188,6 +202,55 @@ test('translates normalized raids into the complete legacy worker shape', async 
     rpl_country_code: 'se', rpl_weather: 2, maxusers: 8, count: 5, readycount: 3,
     join: 0, rpl_deleted: 1, my: 0, rpl_glevel: 41
   }]);
+});
+
+test('rejects non-boolean raid membership and deletion fields before legacy conversion', async () => {
+  for (const field of ['deleted', 'isMe']) {
+    for (const malformed of ['false', 0, 1, null, {}, []]) {
+      const raid = {
+        id: 'raid-1', rank: '5', pokemonId: '150', hostName: 'Host', hostLevel: 50,
+        country: 'se', weather: 0, maxUsers: 10, count: 1, readyCount: 0,
+        joinState: 0, deleted: false, isMe: false, minimumGuestLevel: 0,
+        [field]: malformed
+      };
+      const { adapter } = createAdapter([success('raid get', raid, 'found')]);
+      await assert.rejects(
+        () => adapter.findRaid('raid-1'),
+        (error) => error.code === 'CLI_PROTOCOL_ERROR'
+          && error.message === 'The CLI returned an invalid response.'
+      );
+    }
+  }
+});
+
+test('rejects non-boolean player readiness, identity, and raid deletion fields', async () => {
+  for (const field of ['ready', 'isMe']) {
+    for (const malformed of ['false', 0, 1, null, {}, []]) {
+      const player = {
+        id: 'p1', trainerName: 'Misty', level: 44, country: 'jp', rating: 5,
+        ready: false, isMe: false, [field]: malformed
+      };
+      const { adapter } = createAdapter([success('raid players', {
+        players: [player], count: 1, readyCount: 0, raidDeleted: false
+      }, 'listed')]);
+      await assert.rejects(
+        () => adapter.listRaidPlayers('raid-1'),
+        (error) => error.code === 'CLI_PROTOCOL_ERROR'
+          && error.message === 'The CLI returned an invalid response.'
+      );
+    }
+  }
+
+  for (const raidDeleted of ['false', 0, 1, null, {}, []]) {
+    const { adapter } = createAdapter([success('raid players', {
+      players: [], count: 0, readyCount: 0, raidDeleted
+    }, 'listed')]);
+    await assert.rejects(
+      () => adapter.listRaidPlayers('raid-1'),
+      (error) => error.code === 'CLI_PROTOCOL_ERROR'
+        && error.message === 'The CLI returned an invalid response.'
+    );
+  }
 });
 
 test('refreshes and caches the boss catalog for lobby exclusion filters', async () => {

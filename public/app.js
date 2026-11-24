@@ -1,5 +1,5 @@
 import { clearLocalProfile, loadLocalProfile, saveLocalProfile } from './profile-storage.js';
-import { applyStatusIfUnchanged, countryFlag, createBrowserResetController, formatRaidRating, isCurrentMatchedRaid, leaveCompletionDisplay, mutationStatusDecision, searchStatusDisplay, shouldShowEndedRaidNotice } from './ui-helpers.js';
+import { activeRaidPresentation, applyStatusIfUnchanged, countryFlag, createBrowserResetController, formatRaidRating, isActiveRaidRequestCurrent, loadActiveRaidDetailsIfCurrent, mutationStatusDecision, searchStatusDisplay, shouldShowEndedRaidNotice, workflowStatusPresentation } from './ui-helpers.js';
 import { createTrainerCodeQrController, isValidTrainerCode } from './trainer-code-qr.js';
 import {
   catalogForWorkerView,
@@ -26,7 +26,6 @@ const state = {
   statusTimer: null,
   statusRefreshInFlight: false,
   statusRevision: 0,
-  leaveCompletionPending: false,
   pendingStart: false,
   fetchedAt: null,
   staleWarningCount: 0
@@ -288,8 +287,17 @@ async function loadActiveRaid() {
   const requestedRaidId = state.activeRaidId;
   const requestGeneration = state.activeRaidRequestGeneration;
   try {
-    const details = await api('/api/active-raid');
-    if (!isCurrentMatchedRaid(state.autoJoin, details.raid)) return;
+    const details = await loadActiveRaidDetailsIfCurrent({
+      requestDetails: () => api('/api/active-raid'),
+      requestedRaidId,
+      requestGeneration,
+      current: () => ({
+        activeRaidId: state.activeRaidId,
+        requestGeneration: state.activeRaidRequestGeneration,
+        status: state.autoJoin
+      })
+    });
+    if (!details) return;
     $('#matchedBoss').textContent = bossName(details.raid.rpl_pokemon || details.raid.display_name);
     $('#activeRaidHost').textContent = details.raid.rpl_tid || 'Okänd host';
     $('#activeRaidHostMeta').textContent = Number(details.raid.rpl_level) > 0 ? `TL ${Number(details.raid.rpl_level)}` : '';
@@ -333,12 +341,15 @@ async function loadActiveRaid() {
   } catch (error) {
     if (error.data?.code === 'RAID_ENDED') {
       if (!shouldShowEndedRaidNotice(requestedRaidId, state.activeRaidId, requestGeneration, state.activeRaidRequestGeneration)) return;
-      $('#searchMessage').className = 'form-message search-message';
-      $('#searchMessage').textContent = 'Raiden har avslutats. Sökningen återupptas…';
       await refreshAutoJoinStatus();
       return;
     }
-    if (requestedRaidId !== state.activeRaidId) return;
+    if (!isActiveRaidRequestCurrent(
+      requestedRaidId,
+      state.activeRaidId,
+      requestGeneration,
+      state.activeRaidRequestGeneration
+    )) return;
     $('#activeRaidMeta').textContent = `Kunde inte uppdatera raiden: ${error.message}`;
   }
 }
@@ -376,14 +387,6 @@ function applySelectionPreferences(status) {
   $('#weatherBoost').value = String(preferences.weatherBoost ?? 0);
 }
 
-function renderLeaveCompletion(status) {
-  if (!state.leaveCompletionPending) return;
-  const display = leaveCompletionDisplay(status);
-  $('#searchMessage').className = 'form-message search-message';
-  $('#searchMessage').textContent = display.text;
-  if (display.complete) state.leaveCompletionPending = false;
-}
-
 function renderStatus(status) {
   state.statusRevision += 1;
   state.autoJoin = status;
@@ -403,23 +406,24 @@ function renderStatus(status) {
     error: ['Sökningen misslyckades', status.error || 'Okänt fel.']
   };
   const [title, text] = labels[status.state] || [status.state, ''];
-  const display = searchStatusDisplay(status) || { title, text, displayState: status.state };
+  const workflowDisplay = workflowStatusPresentation(status);
+  const display = workflowDisplay || searchStatusDisplay(status) || { title, text, displayState: status.state };
   $('#statusTitle').textContent = display.title;
   $('#statusText').textContent = display.text;
   $('#statusDot').className = `status-dot ${display.displayState}`;
   $('#lastContact').textContent = status.lastContactAt ? `Kontakt ${formatTime(status.lastContactAt)}` : 'Ingen kontakt ännu';
   $('#nextPoll').textContent = status.nextPollAt ? `Nästa ${formatTime(status.nextPollAt)}` : '—';
-  const matched = status.state === 'matched' && status.raid;
-  const showSearchStatus = ['starting', 'searching', 'retrying', 'joining', 'stopping', 'reconciling', 'error'].includes(status.state);
+  const { matchedRaid: matched, recoveryRaid } = activeRaidPresentation(status);
+  const showSearchStatus = Boolean(workflowDisplay) || Boolean(recoveryRaid) || ['starting', 'searching', 'retrying', 'joining', 'stopping', 'reconciling', 'error'].includes(status.state);
   $('#statusCard').classList.toggle('hidden', !showSearchStatus);
   $('#abandonSearch').classList.toggle('hidden', !status.canAbandonLocal);
+  $('#recoverLeaveRaid').classList.toggle('hidden', !recoveryRaid);
   $('#matchedPanel').classList.toggle('hidden', !matched);
   updateActiveRaidPolling(matched);
   if (matched) $('#matchedBoss').textContent = bossName(status.raid.rpl_pokemon);
   const reconciliation = reconcileCurrentSelection();
   renderRaids();
   renderSelectionDetail(reconciliation);
-  renderLeaveCompletion(status);
   updateControls();
 }
 
@@ -485,12 +489,7 @@ $('#abandonSearch').addEventListener('click', async () => {
   if (!window.confirm(warning)) return;
   try {
     renderStatus(await api('/api/autojoin/abandon', { method: 'POST', body: '{}' }));
-    $('#searchMessage').className = 'form-message search-message';
-    $('#searchMessage').textContent = 'Den lokala sökningen har glömts. Vänta en stund innan du startar igen om Raid NOW-kön fortfarande finns kvar.';
-  } catch (error) {
-    $('#searchMessage').className = 'form-message search-message error';
-    $('#searchMessage').textContent = error.message;
-  }
+  } catch { await refreshStatusAfterMutation(); }
 });
 
 $('#readyRaid').addEventListener('click', async () => {
@@ -505,26 +504,24 @@ $('#readyRaid').addEventListener('click', async () => {
   }
 });
 
-$('#leaveRaid').addEventListener('click', async () => {
+async function requestRaidLeave(button) {
   if (!window.confirm('Vill du lämna den aktiva raiden?')) return;
   state.activeRaidRequestGeneration += 1;
   const leaveRevision = state.statusRevision;
-  const button = $('#leaveRaid'); button.disabled = true;
+  button.disabled = true;
   try {
     const status = await api('/api/active-raid/leave', { method: 'POST', body: '{}' });
     state.activeRaidRequestGeneration += 1;
-    state.leaveCompletionPending = true;
     const decision = mutationStatusDecision(leaveRevision, state.statusRevision);
     state.statusRevision = decision.nextRevision;
-    if (decision.apply) {
-      renderStatus(status);
-    } else {
-      renderLeaveCompletion(state.autoJoin);
-    }
-  } catch (error) {
-    $('#activeRaidMeta').textContent = `Kunde inte lämna raiden: ${error.message}`;
+    if (decision.apply) renderStatus(status);
+  } catch {
+    await refreshStatusAfterMutation();
   } finally { button.disabled = false; }
-});
+}
+
+$('#leaveRaid').addEventListener('click', (event) => requestRaidLeave(event.currentTarget));
+$('#recoverLeaveRaid').addEventListener('click', (event) => requestRaidLeave(event.currentTarget));
 
 async function copyText(text) {
   if (navigator.clipboard?.writeText) {
@@ -674,6 +671,17 @@ async function refreshAutoJoinStatus() {
   }
 }
 
+async function refreshStatusAfterMutation() {
+  state.statusRevision += 1;
+  const startRevision = state.statusRevision;
+  try {
+    const status = await api('/api/autojoin/status');
+    applyStatusIfUnchanged(startRevision, state.statusRevision, status, renderStatus);
+  } catch {
+    // The next SSE event or reconciliation poll retries without inventing UI state.
+  }
+}
+
 function startStatusPolling() {
   if (!state.statusTimer) state.statusTimer = setInterval(refreshAutoJoinStatus, 5_000);
 }
@@ -749,4 +757,7 @@ async function init() {
   connectEvents();
 }
 
-init().catch((error) => { $('#statusTitle').textContent = 'Tjänsten svarar inte'; $('#statusText').textContent = error.message; });
+init().catch((error) => renderStatus({
+  state: 'error', error: error.message, lastContactAt: null, nextPollAt: null,
+  raid: null, raidMembership: 'none', canRequestLeave: false, canAbandonLocal: false
+}));

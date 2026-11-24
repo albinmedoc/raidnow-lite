@@ -316,9 +316,6 @@ export function createApp({ adapter, store, sessionManager = null, pushNotifier 
       }
       if (request.method === 'POST' && url.pathname === '/api/active-raid/leave') {
         if (restoreLocked) return sendJson(response, 409, { message: restoreFailure.error });
-        const status = worker.status();
-        if (status.state !== 'matched' || !status.raid?.rpl_id) return sendJson(response, 404, { message: 'There is no active raid to leave.' });
-        if (!activeAdapter.leaveRaid) return sendJson(response, 501, { message: 'Leaving raids is unavailable in this mode.' });
         return sendJson(response, 200, await worker.leaveRaid());
       }
       if (request.method === 'POST' && url.pathname === '/api/session/reset') {
@@ -437,7 +434,9 @@ export function createApp({ adapter, store, sessionManager = null, pushNotifier 
         try { logger?.error?.('Unexpected request failure.', { code: 'INTERNAL_ERROR' }); } catch {}
         sendJson(response, 500, { message: 'Ett internt fel uppstod.' });
       } else {
-        sendJson(response, status, { message: error.message || String(error) });
+        const body = { message: error.message || String(error) };
+        if (typeof error.code === 'string') body.code = error.code;
+        sendJson(response, status, body);
       }
     } finally {
       if (releaseContext) sessionManager.release?.(context);

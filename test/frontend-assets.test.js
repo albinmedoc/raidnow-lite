@@ -48,25 +48,32 @@ test('PWA manifest and HTML expose installable Swedish metadata and local icons'
   assert.ok(icon512.length > 1000);
 });
 
-test('successful leave returns to configurable search choices only after queue cleanup', async () => {
+test('workflow banner is actor-derived and renderStatus owns its visibility', async () => {
   const source = await asset('app.js');
-  const helpers = await asset('ui-helpers.js');
-  assert.match(source, /leaveCompletionDisplay\(status\)/);
+  const actor = await readFile(new URL('../src/core/autojoin-state-machine.js', import.meta.url), 'utf8');
+  assert.match(source, /workflowStatusPresentation\(status\)/);
   assert.match(source, /const leaveRevision = state\.statusRevision/);
   assert.match(source, /mutationStatusDecision\(leaveRevision, state\.statusRevision\)/);
   assert.match(source, /state\.statusRevision = decision\.nextRevision/);
-  assert.match(source, /state\.leaveCompletionPending/);
-  assert.match(helpers, /Raid NOW-kön städas innan du kan söka igen/);
-  assert.match(helpers, /Raiden är avslutad i Lite\. Du kan ändra valen och söka igen\./);
+  assert.match(source, /refreshStatusAfterMutation\(\)/);
+  assert.doesNotMatch(source, /leaveCompletionPending|renderLeaveCompletion|leaveCompletionDisplay/);
+  assert.doesNotMatch(source, /errorTarget/);
+  assert.match(actor, /Raid NOW-kön städas innan du kan söka igen/);
+  assert.match(actor, /Raiden är avslutad i Lite\. Du kan ändra valen och söka igen\./);
+  const renderStatusSource = source.slice(source.indexOf('function renderStatus'), source.indexOf('async function loadProfile'));
+  assert.match(renderStatusSource, /statusCard/);
+  assert.doesNotMatch(source.slice(0, source.indexOf('function renderStatus')), /statusCard/);
+  assert.doesNotMatch(source.slice(source.indexOf('async function loadProfile')), /statusCard/);
 });
 
 test('ended raid details switch back to search without a generic internal error', async () => {
   const source = await asset('app.js');
   assert.match(source, /error\.data\?\.code === 'RAID_ENDED'/);
   assert.match(source, /shouldShowEndedRaidNotice\(requestedRaidId, state\.activeRaidId, requestGeneration, state\.activeRaidRequestGeneration\)/);
+  assert.match(source, /isActiveRaidRequestCurrent\([\s\S]*?requestedRaidId,[\s\S]*?state\.activeRaidId,[\s\S]*?requestGeneration,[\s\S]*?state\.activeRaidRequestGeneration[\s\S]*?\)/);
   const leaveInvalidations = source.match(/state\.activeRaidRequestGeneration \+= 1/g) || [];
   assert.ok(leaveInvalidations.length >= 2);
-  assert.match(source, /\$\('#searchMessage'\)\.textContent = 'Raiden har avslutats\. Sökningen återupptas…'/);
+  assert.doesNotMatch(source, /\$\('#searchMessage'\)\.textContent = 'Raiden har avslutats\. Sökningen återupptas…'/);
   assert.match(source, /await refreshAutoJoinStatus\(\)/);
 });
 
@@ -82,8 +89,8 @@ test('browser periodically reconciles status when an SSE update is missed', asyn
 
 test('service worker caches only an explicit shell and bypasses APIs, SSE, mutations, and external images', async () => {
   const source = await asset('service-worker.js');
-  assert.match(source, /raidnow-shell-v15/);
-  assert.doesNotMatch(source, /raidnow-shell-v14/);
+  assert.match(source, /raidnow-shell-v19/);
+  assert.doesNotMatch(source, /raidnow-shell-v18/);
   assert.match(source, /const SHELL_ASSETS = \[/);
   assert.match(source, /request\.method !== 'GET'/);
   assert.match(source, /url\.origin !== self\.location\.origin/);
@@ -234,6 +241,14 @@ test('matched raid UI keeps copy and exposes an accessible local QR dialog', asy
   assert.doesNotMatch(source, /state\.profile\.trainerCode[^\n]*createTrainerCodeQr/);
   assert.match(css, /@media\(min-width:801px\)\{[\s\S]*?\.active-raid-qr\{display:flex/);
   assert.match(css, /@media\(max-width:520px\)\{[\s\S]*?\.player-row\{align-items:flex-start;flex-direction:column/);
+});
+
+test('unknown raid recovery has a leave control outside confirmed matched details', async () => {
+  const [html, source] = await Promise.all([asset('index.html'), asset('app.js')]);
+  assert.match(html, /id="recoverLeaveRaid"/);
+  assert.match(html, /Lämna och återställ raid/);
+  assert.match(source, /activeRaidPresentation\(status\)/);
+  assert.match(source, /recoveryRaid/);
 });
 
 test('production files contain no external QR image service URL', async () => {

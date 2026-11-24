@@ -23,6 +23,10 @@ function assertObjectArray(value) {
   if (!Array.isArray(value) || !value.every(isObject)) throw protocolError();
 }
 
+function assertBoolean(value) {
+  if (typeof value !== 'boolean') throw protocolError();
+}
+
 function trainerArgs(profile, { code = false } = {}) {
   const args = [
     '--trainer-name', String(profile?.trainerName ?? ''),
@@ -46,6 +50,8 @@ function minimumHostRating(hostEvaluate) {
 }
 
 function legacyRaid(raid, { exact = false } = {}) {
+  assertBoolean(raid.deleted);
+  assertBoolean(raid.isMe);
   const result = {
     rpl_id: raid.id,
     rpl_rank: raid.rank,
@@ -196,6 +202,7 @@ export class CliRaidNowAdapter {
       'queue', 'check', ...repeatedArgs('--pokemon', selection?.pokemon)
     ], { signal });
     this.#assertObject(data);
+    assertBoolean(data.present);
     if (!Array.isArray(data.waiting)) throw protocolError();
     return {
       status: 'success',
@@ -227,19 +234,24 @@ export class CliRaidNowAdapter {
     const data = await this.#run(['raid', 'players', '--raid-id', String(id)], { signal });
     this.#assertObject(data);
     assertObjectArray(data.players);
+    assertBoolean(data.raidDeleted);
     return {
-      players: data.players.map((player) => ({
-        id: player.id,
-        trainerName: player.trainerName,
-        level: player.level,
-        countryCode: player.country,
-        rating: player.rating,
-        ready: player.ready ? 1 : 0,
-        isMe: Boolean(player.isMe)
-      })),
+      players: data.players.map((player) => {
+        assertBoolean(player.ready);
+        assertBoolean(player.isMe);
+        return {
+          id: player.id,
+          trainerName: player.trainerName,
+          level: player.level,
+          countryCode: player.country,
+          rating: player.rating,
+          ready: player.ready ? 1 : 0,
+          isMe: player.isMe
+        };
+      }),
       count: data.count,
       readyCount: data.readyCount,
-      raidDeleted: Boolean(data.raidDeleted)
+      raidDeleted: data.raidDeleted
     };
   }
 

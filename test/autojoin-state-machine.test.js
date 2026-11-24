@@ -43,6 +43,55 @@ test('definite create reject unlocks resources while timeout keeps queue unknown
   assert.equal(uncertain.wake.kind, 'reconcileQueue');
 });
 
+test('a queue rejection after raid-ended recovery clears the stale informational notice', () => {
+  const matched = {
+    ...initialSnapshot(),
+    intent: 'search',
+    search: { profile, selection, attemptedRaids: {} },
+    raid: { state: 'matched', target: 'raid-1', value: { rpl_id: 'raid-1', rpl_pokemon: 'Giratina' } },
+    terminal: { target: 'matched', error: null }
+  };
+  const resuming = reduce(matched, { type: 'matchedRaidEnded', raidId: 'raid-1' }).snapshot;
+  assert.equal(resuming.operation.kind, 'createQueue');
+  assert.equal(resuming.workflowNotice.kind, 'raid-ended');
+
+  const rejected = reduce(resuming, {
+    type: 'operationRejected',
+    opId: resuming.operation.opId,
+    error: 'Queue creation rejected.',
+    definite: true
+  }).snapshot;
+  assert.equal(rejected.terminal.target, 'error');
+  assert.equal(rejected.terminal.error, 'Queue creation rejected.');
+  assert.equal(rejected.workflowNotice, null);
+});
+
+test('a new search clears a durable terminal workflow notice', () => {
+  const completed = {
+    ...initialSnapshot(),
+    workflowNotice: {
+      kind: 'leave-complete',
+      severity: 'success',
+      message: 'Raiden är avslutad i Lite. Du kan ändra valen och söka igen.'
+    }
+  };
+  const started = reduce(completed, { type: 'start', profile, selection }).snapshot;
+  assert.equal(started.workflowNotice, null);
+});
+
+test('migration canonicalizes workflow notices without retaining persisted message text', () => {
+  const restored = migrateSnapshot({
+    ...initialSnapshot(),
+    workflowNotice: { kind: 'leave-complete', severity: 'error', message: 'secret persisted text' }
+  }, { now, pollIntervalMs: 15_000, matchedValidationIntervalMs: 60_000 });
+  assert.deepEqual(restored.workflowNotice, {
+    kind: 'leave-complete',
+    severity: 'success',
+    message: 'Raiden är avslutad i Lite. Du kan ändra valen och söka igen.'
+  });
+  assert.equal(JSON.stringify(restored).includes('secret persisted text'), false);
+});
+
 test('wrong and late operation ids cannot mutate the snapshot', () => {
   const started = reduce(initialSnapshot(), { type: 'start', profile, selection }).snapshot;
   const wrong = reduce(started, { type: 'operationSucceeded', opId: 'wrong', value: { status: 'success' } });
@@ -68,6 +117,63 @@ test('late join success after stop becomes matched', () => {
   assert.equal(joined.wake.dueAt, '2026-11-11T10:01:00.000Z');
 });
 
+test('blank join details preserve the canonical target and saved controls', () => {
+  let snapshot = reduce(initialSnapshot(), { type: 'start', profile, selection: { ...selection, strategy: 'fast' } }).snapshot;
+  snapshot = reduce(snapshot, { type: 'wake', kind: 'scan' }).snapshot;
+  snapshot = reduce(snapshot, {
+    type: 'operationSucceeded',
+    opId: snapshot.operation.opId,
+    value: [{ rpl_id: 'raid-1', rpl_rank: '5', rpl_pokemon: 'Giratina', rpl_tid: 'Saved host', rpl_code: '999988887777' }]
+  }).snapshot;
+  const joined = reduce(snapshot, {
+    type: 'operationSucceeded',
+    opId: snapshot.operation.opId,
+    value: { status: 'success', data: { rpl_id: '  ', rpl_pokemon: '', rpl_tid: null, rpl_code: undefined } }
+  }).snapshot;
+
+  assert.equal(joined.raid.state, 'matched');
+  assert.equal(joined.raid.target, 'raid-1');
+  assert.deepEqual(joined.raid.value, {
+    rpl_id: 'raid-1',
+    rpl_rank: '5',
+    rpl_pokemon: 'Giratina',
+    rpl_tid: 'Saved host',
+    rpl_code: '999988887777'
+  });
+});
+
+test('membership detail merge ignores null and blank fields but keeps meaningful falsy updates', () => {
+  const snapshot = {
+    ...initialSnapshot(),
+    intent: 'search',
+    raid: {
+      state: 'unknown',
+      target: 'raid-1',
+      value: { rpl_id: 'raid-1', rpl_pokemon: 'Saved boss', rpl_tid: 'Saved host', rpl_code: '999988887777', rpl_country_code: 'se', join: 1, featured: true }
+    },
+    operation: { opId: 'verify-1', kind: 'verifyMembership', input: { raidId: 'raid-1' }, startedAt: now, attempt: 1 }
+  };
+  const confirmed = reduce(snapshot, {
+    type: 'operationSucceeded',
+    opId: 'verify-1',
+    value: {
+      membership: 'present',
+      raid: { rpl_id: '', rpl_pokemon: '   ', rpl_tid: null, rpl_code: undefined, rpl_country_code: 'us', join: 0, featured: false }
+    }
+  }).snapshot;
+
+  assert.equal(confirmed.raid.target, 'raid-1');
+  assert.deepEqual(confirmed.raid.value, {
+    rpl_id: 'raid-1',
+    rpl_pokemon: 'Saved boss',
+    rpl_tid: 'Saved host',
+    rpl_code: '999988887777',
+    rpl_country_code: 'us',
+    join: 0,
+    featured: false
+  });
+});
+
 test('matched raid heartbeat clears a raid that Raid NOW confirms is gone', () => {
   const matched = {
     ...initialSnapshot(),
@@ -82,7 +188,7 @@ test('matched raid heartbeat clears a raid that Raid NOW confirms is gone', () =
   assert.equal(checking.operation.kind, 'verifyMatched');
 
   const cleared = reduce(checking, {
-    type: 'operationSucceeded', opId: checking.operation.opId, value: null
+    type: 'operationSucceeded', opId: checking.operation.opId, value: { membership: 'raid-ended', raid: null }
   }).snapshot;
   assert.equal(cleared.intent, 'search');
   assert.ok(cleared.search);
@@ -124,7 +230,7 @@ test('matched raid heartbeat preserves confirmed membership and retries read fai
   let checking = reduce(matched, { type: 'wake', kind: 'revalidateMatched' }).snapshot;
   const confirmed = reduce(checking, {
     type: 'operationSucceeded', opId: checking.operation.opId,
-    value: { rpl_id: 'raid-1', rpl_pokemon: 'Giratina', join: 1 }
+    value: { membership: 'present', raid: { rpl_id: 'raid-1', rpl_pokemon: 'Giratina', join: 1 } }
   }).snapshot;
   assert.equal(confirmed.raid.state, 'matched');
   assert.equal(confirmed.wake.kind, 'revalidateMatched');
@@ -140,7 +246,7 @@ test('matched raid heartbeat preserves confirmed membership and retries read fai
   assert.equal(retrying.lastError, 'temporary read failure');
 });
 
-test('matched validation only clears explicit absence or a valid join=0 marker', () => {
+test('matched validation only clears normalized absence or ended evidence', () => {
   const matched = {
     ...initialSnapshot(),
     intent: 'idle',
@@ -149,7 +255,11 @@ test('matched validation only clears explicit absence or a valid join=0 marker',
     terminal: { target: 'matched', error: null }
   };
 
-  for (const value of [{ rpl_id: 'raid-1', join: null }, {}, { rpl_id: 'raid-1', join: 'invalid' }]) {
+  for (const value of [
+    { membership: 'unknown', raid: { rpl_id: 'raid-1', join: null } },
+    { membership: 'unknown', raid: null },
+    { membership: 'unknown', raid: { rpl_id: 'raid-1', join: 'invalid' } }
+  ]) {
     const checking = reduce(matched, { type: 'wake', kind: 'revalidateMatched' }).snapshot;
     const retrying = reduce(checking, { type: 'operationSucceeded', opId: checking.operation.opId, value }).snapshot;
     assert.equal(retrying.raid.state, 'matched');
@@ -158,7 +268,10 @@ test('matched validation only clears explicit absence or a valid join=0 marker',
     assert.equal(retrying.retryCount, 1);
   }
 
-  for (const value of [null, { rpl_id: 'raid-1', join: 0 }, { rpl_id: 'raid-1', join: '0' }]) {
+  for (const value of [
+    { membership: 'absent', raid: { rpl_id: 'raid-1', join: 0 } },
+    { membership: 'raid-ended', raid: null }
+  ]) {
     const checking = reduce(matched, { type: 'wake', kind: 'revalidateMatched' }).snapshot;
     const cleared = reduce(checking, { type: 'operationSucceeded', opId: checking.operation.opId, value }).snapshot;
     assert.equal(cleared.raid.state, 'none');
@@ -177,10 +290,53 @@ test('matched validation accepts join=1 and uses the configured interval', () =>
     now, pollIntervalMs: 15_000, scanIntervalMs: 1_000, matchedValidationIntervalMs: 25
   }).snapshot;
   const confirmed = reduceAutoJoin(checking, {
-    type: 'operationSucceeded', opId: checking.operation.opId, value: { rpl_id: 'raid-1', join: '1' }
+    type: 'operationSucceeded', opId: checking.operation.opId,
+    value: { membership: 'present', raid: { rpl_id: 'raid-1', join: '1' } }
   }, { now, pollIntervalMs: 15_000, scanIntervalMs: 1_000, matchedValidationIntervalMs: 25 }).snapshot;
   assert.equal(confirmed.raid.state, 'matched');
   assert.equal(confirmed.wake.dueAt, '2026-11-11T10:00:00.025Z');
+});
+
+test('membership detail merge preserves saved fields when observed values are undefined', () => {
+  const matched = {
+    ...initialSnapshot(),
+    raid: {
+      state: 'matched',
+      target: 'raid-1',
+      value: {
+        rpl_id: 'raid-1',
+        rpl_pokemon: 'Saved boss',
+        rpl_tid: 'Saved host',
+        rpl_country_code: 'se',
+        rpl_level: 45
+      }
+    },
+    wake: { kind: 'revalidateMatched', dueAt: now },
+    terminal: { target: 'matched', error: null }
+  };
+  const checking = reduce(matched, { type: 'wake', kind: 'revalidateMatched' }).snapshot;
+  const confirmed = reduce(checking, {
+    type: 'operationSucceeded',
+    opId: checking.operation.opId,
+    value: {
+      membership: 'present',
+      raid: {
+        rpl_id: 'raid-1',
+        rpl_pokemon: undefined,
+        rpl_tid: undefined,
+        rpl_country_code: undefined,
+        rpl_level: 50
+      }
+    }
+  }).snapshot;
+
+  assert.deepEqual(confirmed.raid.value, {
+    rpl_id: 'raid-1',
+    rpl_pokemon: 'Saved boss',
+    rpl_tid: 'Saved host',
+    rpl_country_code: 'se',
+    rpl_level: 50
+  });
 });
 
 test('leave requested during matched validation launches leave after join=1 confirmation', () => {
@@ -193,7 +349,8 @@ test('leave requested during matched validation launches leave after join=1 conf
   const checking = reduce(matched, { type: 'wake', kind: 'revalidateMatched' }).snapshot;
   const leaveRequested = reduce(checking, { type: 'leave' }).snapshot;
   const leaving = reduce(leaveRequested, {
-    type: 'operationSucceeded', opId: checking.operation.opId, value: { rpl_id: 'raid-1', join: 1 }
+    type: 'operationSucceeded', opId: checking.operation.opId,
+    value: { membership: 'present', raid: { rpl_id: 'raid-1', join: 1 } }
   }).snapshot;
   assert.equal(leaving.intent, 'leave');
   assert.equal(leaving.abandonQueueAfterLeave, true);
@@ -211,7 +368,8 @@ test('leave requested during ambiguous matched validation enters conservative re
   const checking = reduce(matched, { type: 'wake', kind: 'revalidateMatched' }).snapshot;
   const leaveRequested = reduce(checking, { type: 'leave' }).snapshot;
   const reconciling = reduce(leaveRequested, {
-    type: 'operationSucceeded', opId: checking.operation.opId, value: { rpl_id: 'raid-1', join: null }
+    type: 'operationSucceeded', opId: checking.operation.opId,
+    value: { membership: 'unknown', raid: { rpl_id: 'raid-1', join: null } }
   }).snapshot;
   assert.equal(reconciling.intent, 'leave');
   assert.equal(reconciling.raid.state, 'unknown');
@@ -390,7 +548,7 @@ test('raid reconciliation verifies membership and adopts a joined raid', () => {
   assert.equal(verifying.snapshot.operation.input.raidId, 'raid-1');
   const matched = reduce(verifying.snapshot, {
     type: 'operationSucceeded', opId: verifying.snapshot.operation.opId,
-    value: { rpl_id: 'raid-1', rpl_pokemon: 'Giratina', join: 1 }
+    value: { membership: 'present', raid: { rpl_id: 'raid-1', rpl_pokemon: 'Giratina', join: 1 } }
   }).snapshot;
   assert.equal(matched.raid.state, 'matched');
   assert.equal(matched.raid.value.rpl_id, 'raid-1');
@@ -403,7 +561,9 @@ test('raid reconciliation clears confirmed absence and resumes direct scans', ()
     raid: { state: 'unknown', target: 'raid-1', value: { rpl_id: 'raid-1' } },
     operation: { opId: 'find-1', kind: 'verifyMembership', input: { raidId: 'raid-1' }, startedAt: now, attempt: 1 }
   };
-  const cleared = reduce(uncertain, { type: 'operationSucceeded', opId: 'find-1', value: null }).snapshot;
+  const cleared = reduce(uncertain, {
+    type: 'operationSucceeded', opId: 'find-1', value: { membership: 'absent', raid: { rpl_id: 'raid-1', join: 0 } }
+  }).snapshot;
   assert.equal(cleared.raid.state, 'none');
   assert.equal(cleared.wake.kind, 'scan');
 });
@@ -426,7 +586,8 @@ test('failed queue cleanup still revalidates a matched raid', () => {
 
   const validating = reduce(rejected, { type: 'wake', kind: 'revalidateMatched' }).snapshot;
   const confirmed = reduce(validating, {
-    type: 'operationSucceeded', opId: validating.operation.opId, value: { rpl_id: 'raid-1', join: 1 }
+    type: 'operationSucceeded', opId: validating.operation.opId,
+    value: { membership: 'present', raid: { rpl_id: 'raid-1', join: 1 } }
   }).snapshot;
   assert.equal(confirmed.raid.state, 'matched');
   assert.equal(confirmed.wake.kind, 'reconcileQueue');
@@ -448,7 +609,9 @@ test('a vanished matched raid reconciles the queue and resumes the search', () =
     operation: { opId: 'verify-1', kind: 'verifyMatched', input: { raidId: 'raid-1' }, startedAt: now, attempt: 1 },
     terminal: { target: 'matched', error: null }
   };
-  const vanished = reduce(verifying, { type: 'operationSucceeded', opId: 'verify-1', value: null }).snapshot;
+  const vanished = reduce(verifying, {
+    type: 'operationSucceeded', opId: 'verify-1', value: { membership: 'raid-ended', raid: null }
+  }).snapshot;
   assert.equal(vanished.raid.state, 'none');
   assert.equal(vanished.wake.kind, 'reconcileQueue');
   assert.equal(vanished.search.recovering, true);
@@ -493,13 +656,32 @@ test('leave reconciliation keeps the raid visible until absence is confirmed', (
     raid: { state: 'unknown', target: 'raid-1', value: { rpl_id: 'raid-1', rpl_pokemon: 'Giratina' } },
     operation: { opId: 'find-1', kind: 'verifyMembership', input: { raidId: 'raid-1' }, startedAt: now, attempt: 1 }
   };
-  const stillJoined = reduce(uncertain, { type: 'operationSucceeded', opId: 'find-1', value: { rpl_id: 'raid-1', join: 1 } }).snapshot;
+  const stillJoined = reduce(uncertain, {
+    type: 'operationSucceeded', opId: 'find-1',
+    value: { membership: 'present', raid: { rpl_id: 'raid-1', join: 1 } }
+  }).snapshot;
   assert.equal(stillJoined.raid.value.rpl_id, 'raid-1');
   assert.equal(stillJoined.operation.kind, 'leaveRaid');
   const absentCheck = { ...uncertain, operation: { ...uncertain.operation, opId: 'find-2' } };
-  const absent = reduce(absentCheck, { type: 'operationSucceeded', opId: 'find-2', value: null }).snapshot;
+  const absent = reduce(absentCheck, {
+    type: 'operationSucceeded', opId: 'find-2', value: { membership: 'raid-ended', raid: null }
+  }).snapshot;
   assert.equal(absent.raid.state, 'none');
   assert.equal(absent.intent, 'idle');
+});
+
+test('leave verifies unknown durable raid membership before another leave write', () => {
+  const uncertain = {
+    ...initialSnapshot(),
+    intent: 'search',
+    raid: { state: 'unknown', target: 'raid-target-only', value: null },
+    wake: { kind: 'reconcileRaid', dueAt: now }
+  };
+  const leaving = reduce(uncertain, { type: 'leave' });
+  assert.equal(leaving.snapshot.intent, 'leave');
+  assert.equal(leaving.snapshot.raid.state, 'unknown');
+  assert.equal(leaving.snapshot.operation.kind, 'verifyMembership');
+  assert.equal(leaving.snapshot.operation.input.raidId, 'raid-target-only');
 });
 
 test('raid reconciliation failure stays locked and retries', () => {

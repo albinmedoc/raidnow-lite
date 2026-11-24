@@ -1,6 +1,13 @@
 import { EventEmitter } from 'node:events';
 import { initialSnapshot, migrateSnapshot, reduceAutoJoin } from './autojoin-state-machine.js';
-import { CliCommandError } from '../adapters/cli-process-runner.js';
+import {
+  AdapterCapabilityError,
+  diagnosticFieldsFromOutcome,
+  isWriteOperation,
+  normalizeAdapterSettlement,
+  reducerEventFromOutcome,
+  sanitizeDiagnosticEvent
+} from './adapter-outcome.js';
 
 const defaultClock = {
   now: () => Date.now(),
@@ -12,49 +19,60 @@ const defaultClock = {
   clearTimeout: (handle) => globalThis.clearTimeout(handle)
 };
 
-const WRITE_OPERATIONS = new Set(['createQueue', 'cancelQueue', 'joinRaid', 'leaveRaid']);
-
 function clone(value) {
   return structuredClone(value);
 }
 
-function message(error) {
-  return error?.message || String(error);
+function isExplicitTrue(value) {
+  return value === true || value === 1 || value === '1';
 }
 
-function writeFailureOutcome(error) {
-  if (!(error instanceof CliCommandError)) return 'unknown';
-  if (error.exitCode === 8) return 'not-dispatched';
-  if ([2, 3, 4, 5, 6, 7].includes(error.exitCode)) return 'definite';
-  return 'unknown';
+function isExactRaidMembership(value) {
+  return value === 1 || value === '1';
 }
 
-function lobbyJoinRejection(error) {
-  if (!(error instanceof CliCommandError) || error.code !== 'UPSTREAM_REJECTION' || error.exitCode !== 7) return null;
-  const text = message(error);
-  if (/maximum number of participants has been exceeded|\blobby is full\b/i.test(text)) return 'full';
-  if (/the host has declared the start of the raid/i.test(text)) return 'started';
-  return null;
+function isExplicitZero(value) {
+  return value === 0 || value === '0';
+}
+
+async function probeRaidMembership(adapter, raidId, signal) {
+  const exactPromise = Promise.resolve().then(() => {
+    if (typeof adapter.findRaid !== 'function') throw new Error('Raid reconciliation requires adapter.findRaid().');
+    return adapter.findRaid(raidId, { signal });
+  });
+  const playersPromise = Promise.resolve().then(() => {
+    if (typeof adapter.listRaidPlayers !== 'function') throw new Error('Raid reconciliation requires adapter.listRaidPlayers().');
+    return adapter.listRaidPlayers(raidId, { signal });
+  });
+  const [exactResult, playersResult] = await Promise.allSettled([exactPromise, playersPromise]);
+  const observedRaid = exactResult.status === 'fulfilled' && exactResult.value && typeof exactResult.value === 'object'
+    ? exactResult.value
+    : null;
+  const observedRaidId = observedRaid?.rpl_id;
+  const raid = observedRaidId !== undefined && observedRaidId !== null && String(observedRaidId).trim() !== ''
+    && String(observedRaidId) === String(raidId)
+    ? observedRaid
+    : null;
+  const players = playersResult.status === 'fulfilled' && playersResult.value && typeof playersResult.value === 'object'
+    ? playersResult.value
+    : null;
+
+  if (isExplicitTrue(players?.raidDeleted) || isExplicitTrue(raid?.rpl_deleted) || isExplicitTrue(raid?.deleted)) {
+    return { membership: 'raid-ended', raid };
+  }
+  if (isExactRaidMembership(raid?.join) || isExactRaidMembership(raid?.my) || players?.players?.some((player) => player?.isMe === true)) {
+    return { membership: 'present', raid };
+  }
+  if (isExplicitZero(raid?.join)) return { membership: 'absent', raid };
+  return { membership: 'unknown', raid };
 }
 
 export function leaveRaidRejection(error) {
-  if (!(error instanceof CliCommandError) || error.code !== 'UPSTREAM_REJECTION' || error.exitCode !== 7) return null;
-  const upstream = message(error)
-    .trim()
-    .replace(/^Upstream avvisade begäran:\s*/i, '')
-    .replace(/\.\s*$/, '')
-    .trim()
-    .toLowerCase();
-  return upstream === 'the raid has been declared started and you cannot leave' ? 'started' : null;
-}
-
-function diagnosticMessage(error, operation) {
-  let value = message(error).replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 512);
-  const trainerCode = operation.input?.profile?.trainerCode;
-  if (trainerCode) value = value.replaceAll(String(trainerCode), '[REDACTED]');
-  value = value.replace(/\b(?:gofriend_token|token)\s*[:=]\s*[^\s,;]+/gi, (match) => `${match.slice(0, match.search(/[:=]/) + 1)}[REDACTED]`);
-  value = value.replace(/[A-Za-z0-9_-]{40,128}/g, '[REDACTED]');
-  return value.replace(/(^|[^A-Za-z0-9])(?:\d{12}|\d{4}(?:[ -]\d{4}){2})(?=$|[^A-Za-z0-9])/g, '$1[REDACTED]');
+  const operation = { opId: 'classification', kind: 'leaveRaid', input: {} };
+  const settlement = error && typeof error === 'object' && !Array.isArray(error) && error.status === 'error'
+    ? { status: 'fulfilled', value: error }
+    : { status: 'rejected', reason: error };
+  return normalizeAdapterSettlement(operation, settlement).reason === 'raidAlreadyStarted' ? 'started' : null;
 }
 
 function runDirect(operation, { signal } = {}) {
@@ -62,11 +80,25 @@ function runDirect(operation, { signal } = {}) {
   return Promise.resolve().then(operation);
 }
 
-export class AutoJoinUnavailableError extends Error {
+const ADAPTER_CAPABILITIES = {
+  createQueue: ['createMatching'],
+  pollQueue: ['pollMatching'],
+  joinRaid: ['joinRaidFast'],
+  cancelQueue: ['cancelMatching'],
+  checkQueue: ['checkMatching'],
+  leaveRaid: ['leaveRaid'],
+  verifyMembership: ['findRaid', 'listRaidPlayers'],
+  verifyMatched: ['findRaid', 'listRaidPlayers']
+};
+
+function unavailableMessage(kind, methods) {
+  return `Auto Join ${kind} is unavailable because the adapter does not support ${methods.join(' and ')}.`;
+}
+
+export class AutoJoinUnavailableError extends AdapterCapabilityError {
   constructor(message) {
     super(message);
-    this.status = 501;
-    this.code = 'AUTOJOIN_UNAVAILABLE';
+    this.name = 'AutoJoinUnavailableError';
   }
 }
 
@@ -110,19 +142,25 @@ export class AutoJoinWorker extends EventEmitter {
 
   status() {
     const snapshot = this.#snapshot;
-    const matched = snapshot.raid.state === 'matched' || snapshot.raid.state === 'leaving' ||
-      (snapshot.raid.state === 'unknown' && snapshot.raid.value && snapshot.intent === 'leave');
+    const matched = snapshot.raid.state === 'matched' || snapshot.raid.state === 'leaving';
     let state = snapshot.terminal.target ?? 'idle';
     if (matched) state = 'matched';
-    else if (snapshot.intent === 'stop' && snapshot.raid.state === 'unknown') state = 'stopping';
+    else if (snapshot.raid.state === 'unknown' && snapshot.intent === 'stop') state = 'stopping';
+    else if (snapshot.raid.state === 'unknown') state = 'reconciling';
     else if (snapshot.operation?.kind === 'joinRaid') state = 'joining';
     else if (snapshot.intent === 'search') {
       if (snapshot.operation?.kind === 'createQueue') state = 'starting';
       else state = snapshot.retryCount > 0 || snapshot.lastError ? 'retrying' : 'searching';
-    } else if (snapshot.queue.state !== 'none' || snapshot.wake?.kind === 'reconcileQueue') state = 'reconciling';
+    } else if ((snapshot.queue.state !== 'none' || snapshot.wake?.kind === 'reconcileQueue') && snapshot.terminal.code !== 'AUTOJOIN_UNAVAILABLE') state = 'reconciling';
 
     const queueCancelPending = snapshot.queue.state !== 'none' &&
       (snapshot.intent === 'stop' || snapshot.intent === 'leave' || matched || snapshot.terminal.target === 'error');
+    let raid = clone(snapshot.raid.value ?? null);
+    if (snapshot.raid.target) {
+      if (raid) raid.rpl_id = String(snapshot.raid.target);
+      else raid = { rpl_id: String(snapshot.raid.target) };
+    }
+    const canRequestLeave = ['matched', 'unknown'].includes(snapshot.raid.state) && Boolean(raid?.rpl_id);
     const canAbandonLocal = snapshot.intent === 'stop' &&
       snapshot.queue.state === 'unknown' &&
       snapshot.raid.state === 'none' &&
@@ -139,12 +177,15 @@ export class AutoJoinWorker extends EventEmitter {
       error: snapshot.terminal.error ?? (['retrying', 'reconciling', 'stopping'].includes(state) ? snapshot.lastError : null),
       profile: matched ? null : clone(snapshot.search?.profile ?? null),
       selection: clone(snapshot.search?.selection ?? null),
-      raid: clone(snapshot.raid.value ?? null),
+      raid,
+      raidMembership: snapshot.raid.state,
+      canRequestLeave,
       queueCancelPending,
       canAbandonLocal,
       directScanDisabled: Boolean(snapshot.search?.directScanDisabled),
       retryCount: Number(snapshot.retryCount || 0),
       lastError: snapshot.lastError,
+      workflowNotice: clone(snapshot.workflowNotice ?? null),
       nextRetryAt: snapshot.wake?.kind.startsWith('reconcile') ? nextAt : null
     };
   }
@@ -195,7 +236,12 @@ export class AutoJoinWorker extends EventEmitter {
     const leaving = this.#dispatch({ type: 'leave' })
       .then(() => this.#waitUntil((status) => this.#snapshot.raid.state === 'none' || (this.#snapshot.intent !== 'leave' && Boolean(this.#snapshot.terminal.error))))
       .then((status) => {
-        if (status.error) throw new Error(status.error);
+        if (status.error) {
+          if (this.#snapshot.terminal?.status === 501 && this.#snapshot.terminal?.code === 'AUTOJOIN_UNAVAILABLE') {
+            throw new AutoJoinUnavailableError(status.error);
+          }
+          throw new Error(status.error);
+        }
         return status;
       });
     const tracked = leaving.finally(() => {
@@ -276,31 +322,10 @@ export class AutoJoinWorker extends EventEmitter {
     const startedAt = this.#clock.now();
     this.#activeOperation = { opId, controller };
     this.#runOperation(() => this.#executeAdapter(operation, controller.signal), { signal: controller.signal })
-      .then((value) => {
-        if (!this.#running) return;
-        if (WRITE_OPERATIONS.has(operation.kind)) this.#recordDiagnostic(operation, 'succeeded', null, startedAt);
-        return this.#dispatch({ type: 'operationSucceeded', opId, value });
-      })
-      .catch((error) => {
-        if (!this.#running) return;
-        this.#recordDiagnostic(operation, 'rejected', error, startedAt);
-        const writeOutcome = writeFailureOutcome(error);
-        const definite = !WRITE_OPERATIONS.has(operation.kind)
-          || writeOutcome === 'definite'
-          || writeOutcome === 'not-dispatched';
-        const lobbyRejection = operation.kind === 'joinRaid' && definite ? lobbyJoinRejection(error) : null;
-        const raidLeaveRejection = operation.kind === 'leaveRaid' && definite ? leaveRaidRejection(error) : null;
-        return this.#dispatch({
-          type: 'operationRejected',
-          opId,
-          error: message(error),
-          status: error?.status,
-          definite,
-          retryableLobbyJoin: lobbyRejection !== null,
-          blockLobbyJoin: lobbyRejection === 'started',
-          raidAlreadyStarted: raidLeaveRejection === 'started'
-        });
-      })
+      .then(
+        (value) => this.#consumeAdapterSettlement(operation, { status: 'fulfilled', value }, startedAt),
+        (reason) => this.#consumeAdapterSettlement(operation, { status: 'rejected', reason }, startedAt)
+      )
       .catch((error) => this.emit('workerError', error))
       .finally(() => {
         if (this.#activeOperation?.controller === controller) this.#activeOperation = null;
@@ -310,30 +335,27 @@ export class AutoJoinWorker extends EventEmitter {
       });
   }
 
-  #recordDiagnostic(operation, result, error, startedAt) {
+  #consumeAdapterSettlement(operation, settlement, startedAt) {
+    if (!this.#running) return;
+    const outcome = normalizeAdapterSettlement(operation, settlement);
+    if (isWriteOperation(operation.kind)) this.#recordDiagnostic(operation, outcome, startedAt);
+    return this.#dispatch(reducerEventFromOutcome(operation, outcome));
+  }
+
+  #recordDiagnostic(operation, outcome, startedAt) {
     if (!this.#diagnostics) return;
     const event = {
       event: 'raidnow_operation',
       operation: operation.kind,
-      result,
       at: new Date(this.#clock.now()).toISOString(),
-      durationMs: Math.max(0, this.#clock.now() - startedAt)
+      durationMs: Math.max(0, this.#clock.now() - startedAt),
+      ...diagnosticFieldsFromOutcome(outcome)
     };
-    if (error) {
-      event.code = typeof error.code === 'string' ? error.code : 'UNCLASSIFIED_ERROR';
-      if (Number.isInteger(error.exitCode)) event.exitCode = error.exitCode;
-      if (typeof error.command === 'string') event.command = error.command;
-      if (typeof error.status === 'string' || Number.isFinite(error.status)) event.status = error.status;
-      event.message = diagnosticMessage(error, operation);
-    }
-    if (WRITE_OPERATIONS.has(operation.kind)) {
-      event.writeOutcome = result === 'succeeded' ? 'confirmed' : writeFailureOutcome(error);
-    }
     if (['joinRaid', 'leaveRaid', 'verifyMembership', 'verifyMatched'].includes(operation.kind)) {
       event.raidId = String(operation.input?.raidId ?? '');
     }
     try {
-      this.#diagnostics(event);
+      this.#diagnostics(sanitizeDiagnosticEvent(event));
     } catch {
       // Diagnostics must never affect the workflow.
     }
@@ -341,6 +363,15 @@ export class AutoJoinWorker extends EventEmitter {
 
   async #executeAdapter(operation, signal) {
     const input = operation.input ?? {};
+    const required = ADAPTER_CAPABILITIES[operation.kind] ?? [];
+    const missing = required.filter((method) => typeof this.#adapter[method] !== 'function');
+    if (operation.kind === 'scanLobbies') {
+      if (typeof this.#adapter.listRaidsForSelection !== 'function' && typeof this.#adapter.listRaids !== 'function') {
+        throw new AutoJoinUnavailableError(unavailableMessage(operation.kind, ['listRaidsForSelection or listRaids']));
+      }
+    } else if (missing.length) {
+      throw new AutoJoinUnavailableError(unavailableMessage(operation.kind, missing));
+    }
     switch (operation.kind) {
       case 'createQueue':
         return this.#adapter.createMatching({ profile: input.profile, selection: input.selection }, { signal });
@@ -366,9 +397,8 @@ export class AutoJoinWorker extends EventEmitter {
         return this.#adapter.leaveRaid(input.raidId, { signal });
       case 'verifyMembership':
       case 'verifyMatched':
-        if (!this.#adapter.findRaid) throw new Error('Raid reconciliation requires adapter.findRaid().');
         if (!input.raidId) throw new Error('Raid reconciliation requires a target raid ID.');
-        return this.#adapter.findRaid(input.raidId, { signal });
+        return probeRaidMembership(this.#adapter, input.raidId, signal);
       default:
         throw new Error(`Unknown Auto Join operation: ${operation.kind}`);
     }

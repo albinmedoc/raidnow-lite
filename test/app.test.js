@@ -487,6 +487,7 @@ test('ended active raid returns a recovery response and resumes the saved search
     assert.match(body.message, /sökningen återupptas/i);
     assert.notEqual(app.worker.status().state, 'matched');
     assert.deepEqual(app.worker.status().selection.pokemon, ['Giratina']);
+    assert.equal(app.worker.status().workflowNotice.kind, 'raid-ended');
   } finally { await close(app); }
 });
 
@@ -602,6 +603,101 @@ test('demo route leaves a deterministic mock match and returns idle', async () =
   } finally { await close(app); }
 });
 
+test('leave route probes unknown durable raid membership before writing', async () => {
+  let leftId = null;
+  const order = [];
+  const app = await startTestApp({
+    async findRaid(id) { order.push(`probe:${id}`); return { rpl_id: id, join: 1 }; },
+    async listRaidPlayers(id) { order.push(`players:${id}`); return { players: [] }; },
+    async leaveRaid(id) { order.push(`leave:${id}`); leftId = id; return { status: 'success' }; }
+  });
+  try {
+    await app.worker.restore({
+      schemaVersion: 2,
+      intent: 'search',
+      startedAt: '2026-11-24T10:00:00.000Z',
+      search: null,
+      queue: { state: 'none' },
+      raid: { state: 'unknown', target: 'raid-unknown', value: { rpl_id: 'raid-unknown', rpl_pokemon: 'Giratina' } },
+      operation: null,
+      wake: { kind: 'reconcileRaid', dueAt: new Date(Date.now() + 60_000).toISOString() },
+      terminal: { target: 'searching', error: null },
+      lastContactAt: null,
+      retryCount: 1,
+      lastError: 'Membership check timed out.',
+      abandonQueueAfterLeave: false,
+      leaveQueueCancelRejections: 0,
+      opSequence: 3
+    });
+
+    const before = await fetch(`${app.baseUrl}/api/autojoin/status`).then((response) => response.json());
+    assert.equal(before.canRequestLeave, true);
+    assert.equal(before.raidMembership, 'unknown');
+
+    const response = await fetch(`${app.baseUrl}/api/active-raid/leave`, { method: 'POST' });
+    assert.equal(response.status, 200);
+    assert.deepEqual(order, ['probe:raid-unknown', 'players:raid-unknown', 'leave:raid-unknown']);
+    assert.equal(leftId, 'raid-unknown');
+    assert.equal((await response.json()).state, 'idle');
+  } finally { await close(app); }
+});
+
+test('leave route completes absent membership recovery without write capability', async () => {
+  const reads = [];
+  const app = await startTestApp({
+    async findRaid(id) { reads.push(`exact:${id}`); return { rpl_id: id, join: 0 }; },
+    async listRaidPlayers(id) { reads.push(`players:${id}`); return { players: [], raidDeleted: false }; }
+  });
+  try {
+    await app.worker.restore({
+      schemaVersion: 2,
+      intent: 'search',
+      queue: { state: 'none' },
+      raid: { state: 'unknown', target: 'raid-read-only', value: { rpl_id: 'raid-read-only' } },
+      operation: null,
+      wake: { kind: 'reconcileRaid', dueAt: new Date(Date.now() + 60_000).toISOString() },
+      terminal: { target: 'searching', error: null }
+    });
+
+    const response = await fetch(`${app.baseUrl}/api/active-raid/leave`, { method: 'POST' });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).state, 'idle');
+    assert.deepEqual(reads.sort(), ['exact:raid-read-only', 'players:raid-read-only']);
+  } finally { await close(app); }
+});
+
+test('leave route returns typed 501 after reads confirm a write is required', async () => {
+  const reads = [];
+  const app = await startTestApp({
+    async findRaid(id) { reads.push(`exact:${id}`); return { rpl_id: id, join: 1 }; },
+    async listRaidPlayers(id) { reads.push(`players:${id}`); return { players: [], raidDeleted: false }; }
+  });
+  try {
+    await app.worker.restore({
+      schemaVersion: 2,
+      intent: 'search',
+      queue: { state: 'none' },
+      raid: { state: 'unknown', target: 'raid-read-only', value: { rpl_id: 'raid-read-only' } },
+      operation: null,
+      wake: { kind: 'reconcileRaid', dueAt: new Date(Date.now() + 60_000).toISOString() },
+      terminal: { target: 'searching', error: null }
+    });
+
+    const response = await fetch(`${app.baseUrl}/api/active-raid/leave`, { method: 'POST' });
+    assert.equal(response.status, 501);
+    assert.equal((await response.json()).code, 'AUTOJOIN_UNAVAILABLE');
+    assert.deepEqual(reads.sort(), ['exact:raid-read-only', 'players:raid-read-only']);
+    assert.equal(app.worker.status().state, 'matched');
+    assert.equal(app.worker.status().nextRetryAt, null);
+    const authoritative = await fetch(`${app.baseUrl}/api/autojoin/status`).then((result) => result.json());
+    assert.deepEqual(authoritative.workflowNotice, {
+      kind: 'leave-unavailable',
+      severity: 'error',
+      message: 'Raiden kunde inte lämnas eftersom funktionen inte är tillgänglig.'
+    });
+  } finally { await close(app); }
+});
+
 test('allows explicit local abandonment only for repeated safe queue uncertainty', async () => {
   const app = await startTestApp({ async checkMatching() { return { id: 'still-present' }; } });
   try {
@@ -649,7 +745,8 @@ test('maps lifecycle conflicts and unavailable operations to stable HTTP statuse
     await fetch(`${app.baseUrl}/api/profile`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(profile) });
 
     const noRaid = await fetch(`${app.baseUrl}/api/active-raid/leave`, { method: 'POST' });
-    assert.equal(noRaid.status, 404);
+    assert.equal(noRaid.status, 409);
+    assert.equal((await noRaid.json()).code, 'AUTOJOIN_CONFLICT');
 
     const selection = { ranks: ['5'], pokemon: ['Giratina'] };
     assert.equal((await fetch(`${app.baseUrl}/api/autojoin/start`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(selection) })).status, 200);
