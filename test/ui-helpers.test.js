@@ -4,6 +4,7 @@ import {
   countryFlag,
   createBrowserResetController,
   applyStatusIfUnchanged,
+  formatLobbyPlayerCount,
   formatRaidRating,
   formatTrainerCode,
   isActiveRaidRequestCurrent,
@@ -32,6 +33,12 @@ test('formats a trainer code into selectable four-digit groups', () => {
   assert.equal(formatTrainerCode('999988887777'), '9999 8888 7777');
   assert.equal(formatTrainerCode(' 9999-8888-7777 '), '9999 8888 7777');
   assert.equal(formatTrainerCode(''), '—');
+});
+
+test('formats current and maximum lobby player counts', () => {
+  assert.equal(formatLobbyPlayerCount(5, 5), '5/5');
+  assert.equal(formatLobbyPlayerCount(5, 9), '5/9');
+  assert.equal(formatLobbyPlayerCount(5, null), '5');
 });
 
 test('formats zero-star and missing Raid NOW ratings explicitly', () => {

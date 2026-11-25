@@ -1,5 +1,5 @@
 import { clearLocalProfile, loadLocalProfile, saveLocalProfile } from './profile-storage.js';
-import { activeRaidPresentation, applyStatusIfUnchanged, countryFlag, createBrowserResetController, formatRaidRating, isActiveRaidRequestCurrent, loadActiveRaidDetailsIfCurrent, mutationStatusDecision, queueSelectionFromBosses, searchStatusDisplay, shouldShowEndedRaidNotice, workflowStatusPresentation } from './ui-helpers.js';
+import { activeRaidPresentation, applyStatusIfUnchanged, countryFlag, createBrowserResetController, formatLobbyPlayerCount, formatRaidRating, isActiveRaidRequestCurrent, loadActiveRaidDetailsIfCurrent, mutationStatusDecision, queueSelectionFromBosses, searchStatusDisplay, shouldShowEndedRaidNotice, workflowStatusPresentation } from './ui-helpers.js';
 import { createTrainerCodeQrController, isValidTrainerCode } from './trainer-code-qr.js';
 import {
   catalogForWorkerView,
@@ -301,8 +301,10 @@ async function loadActiveRaid() {
     $('#matchedBoss').textContent = bossName(details.raid.rpl_pokemon || details.raid.display_name);
     $('#activeRaidHost').textContent = details.raid.rpl_tid || 'Okänd host';
     $('#activeRaidHostMeta').textContent = Number(details.raid.rpl_level) > 0 ? `TL ${Number(details.raid.rpl_level)}` : '';
-    $('#activeRaidCount').textContent = String(details.count ?? details.players.length);
-    $('#activeRaidReady').textContent = `${details.readyCount ?? 0}/${details.count ?? details.players.length}`;
+    const playerCount = details.count ?? details.players.length;
+    const maximumPlayers = details.raid.maxusers ?? details.raid.rpl_maxuser;
+    $('#activeRaidCount').textContent = formatLobbyPlayerCount(playerCount, maximumPlayers);
+    $('#activeRaidReady').textContent = `${details.readyCount ?? 0}/${playerCount}`;
     $('#activeRaidMeta').textContent = `Uppdaterad ${formatTime(details.fetchedAt)}`;
     const me = details.players.find((player) => player.isMe);
     $('#readyRaid').disabled = !me || me.ready === 1;

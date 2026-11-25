@@ -52,6 +52,13 @@ export function countryFlag(value) {
   return String.fromCodePoint(...[...code].map((character) => 127397 + character.charCodeAt(0)));
 }
 
+export function formatLobbyPlayerCount(count, maximum) {
+  const current = Number(count);
+  const max = Number(maximum);
+  const currentText = Number.isInteger(current) && current >= 0 ? String(current) : '0';
+  return Number.isInteger(max) && max > 0 ? `${currentText}/${max}` : currentText;
+}
+
 export function formatRaidRating(value) {
   const available = Number.isInteger(value) && value >= 0 && value <= 5;
   return available
