@@ -70,15 +70,24 @@ export function popularBosses(catalog = [], limit = 5) {
 
 export function reconcileSelection(catalog = [], localSelection = null, serverSelection = null) {
   if (serverSelection && Array.isArray(serverSelection.ranks) && Array.isArray(serverSelection.pokemon)) {
-    const ranks = new Set(serverSelection.ranks.map(String));
-    const pokemon = new Set(serverSelection.pokemon.map(String));
-    const selected = catalog.filter((boss) => ranks.has(String(boss.rank)) && (boss.pokemon || []).some((id) => pokemon.has(String(id))));
-    const matchedPokemon = new Set(selected.flatMap((boss) => boss.pokemon || []).map(String));
+    const pairs = serverSelection.pokemon.map((pokemon, index) => ({
+      rank: String(serverSelection.ranks[index] ?? ''),
+      pokemon: String(pokemon)
+    }));
+    const pairKeys = new Set(pairs.map(({ rank, pokemon }) => `${rank}\u0000${pokemon}`));
+    const selected = catalog.filter((boss) => (boss.pokemon || []).some((pokemon) =>
+      pairKeys.has(`${String(boss.rank)}\u0000${String(pokemon)}`)
+    ));
+    const matchedPairKeys = new Set(selected.flatMap((boss) => (boss.pokemon || []).map((pokemon) =>
+      `${String(boss.rank)}\u0000${String(pokemon)}`
+    )));
     return {
       source: 'server',
       selected,
       staleIds: [],
-      missingServerPokemon: [...pokemon].filter((id) => !matchedPokemon.has(id)).sort((a, b) => a.localeCompare(b))
+      missingServerPokemon: [...new Set(pairs
+        .filter(({ rank, pokemon }) => !matchedPairKeys.has(`${rank}\u0000${pokemon}`))
+        .map(({ pokemon }) => pokemon))].sort((a, b) => a.localeCompare(b))
     };
   }
 

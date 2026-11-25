@@ -26,6 +26,15 @@ test('canonicalizes all supported search filters and derives bounded upstream va
   });
 });
 
+test('preserves one rank for each selected boss when several bosses share a tier', () => {
+  const selection = normalizeSearchSelection({
+    ranks: ['5', '5'],
+    pokemon: ['150', '487']
+  });
+  assert.deepEqual(selection.ranks, ['5', '5']);
+  assert.deepEqual(selection.pokemon, ['150', '487']);
+});
+
 test('maps Raid NOW host level zero to TL 5+ and supports only upstream values', () => {
   assert.equal(normalizeSearchSelection({ ranks: ['5'], pokemon: ['Giratina'] }).hostLevel, 0);
   for (const hostLevel of [0, 40, 50, 60, 70]) {
@@ -39,6 +48,15 @@ test('rejects malformed filter scalars and oversized boss arrays', () => {
   assert.throws(() => normalizeSearchSelection({ ranks: ['5'], pokemon: ['Giratina'], hostCountry: 2 }), /host country/i);
   assert.throws(() => normalizeSearchSelection({ ranks: ['5'], pokemon: ['Giratina'], weatherBoost: 3 }), /weather boost/i);
   assert.throws(() => normalizeSearchSelection({ ranks: ['5'], pokemon: Array.from({ length: 101 }, (_, index) => `boss-${index}`) }), /bosses/i);
+});
+
+test('restore expands a legacy single rank across every selected boss', () => {
+  const restored = normalizeRestoredSearchSelection({
+    ranks: ['5'],
+    pokemon: ['150', '487']
+  });
+  assert.deepEqual(restored.ranks, ['5', '5']);
+  assert.deepEqual(restored.pokemon, ['150', '487']);
 });
 
 test('restore drops untrusted derived arrays and defaults invalid filter scalars', () => {

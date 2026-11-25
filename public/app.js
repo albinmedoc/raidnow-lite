@@ -1,5 +1,5 @@
 import { clearLocalProfile, loadLocalProfile, saveLocalProfile } from './profile-storage.js';
-import { activeRaidPresentation, applyStatusIfUnchanged, countryFlag, createBrowserResetController, formatRaidRating, isActiveRaidRequestCurrent, loadActiveRaidDetailsIfCurrent, mutationStatusDecision, searchStatusDisplay, shouldShowEndedRaidNotice, workflowStatusPresentation } from './ui-helpers.js';
+import { activeRaidPresentation, applyStatusIfUnchanged, countryFlag, createBrowserResetController, formatRaidRating, isActiveRaidRequestCurrent, loadActiveRaidDetailsIfCurrent, mutationStatusDecision, queueSelectionFromBosses, searchStatusDisplay, shouldShowEndedRaidNotice, workflowStatusPresentation } from './ui-helpers.js';
 import { createTrainerCodeQrController, isValidTrainerCode } from './trainer-code-qr.js';
 import {
   catalogForWorkerView,
@@ -464,10 +464,10 @@ async function startSearch() {
   }
   persistSelection();
   const bosses = [...state.selected.values()];
+  const pairedSelection = queueSelectionFromBosses(bosses);
   const selection = {
     strategy: 'hybrid', profile: state.profile,
-    ranks: [...new Set(bosses.map((boss) => String(boss.rank)))],
-    pokemon: [...new Set(bosses.flatMap((boss) => boss.pokemon))],
+    ...pairedSelection,
     hostLevel: Number($('#hostLevel').value || 0),
     hostRating: Number($('#hostRating').value),
     hostCountry: Number($('#hostCountry').value || 0),

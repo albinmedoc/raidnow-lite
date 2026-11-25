@@ -67,9 +67,19 @@ test('reconciles local selection against the current catalog and reports stale I
   assert.equal(result.source, 'local');
 });
 
+test('active server selection preserves exact rank and boss pairs', () => {
+  const result = reconcileSelection(catalog, null, {
+    ranks: ['5', '3'],
+    pokemon: ['ピカチュウ', 'ザシアン']
+  });
+
+  assert.deepEqual(result.selected, []);
+  assert.deepEqual(result.missingServerPokemon, ['ザシアン', 'ピカチュウ']);
+});
+
 test('active server selection overrides local selection and reports missing server bosses', () => {
   const result = reconcileSelection(catalog, { bossIds: ['3\u0000ピカチュウ'] }, {
-    ranks: ['5'],
+    ranks: ['5', '5'],
     pokemon: ['ザシアン', 'Försvunnen']
   });
 

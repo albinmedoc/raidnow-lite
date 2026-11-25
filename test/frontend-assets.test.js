@@ -89,8 +89,8 @@ test('browser periodically reconciles status when an SSE update is missed', asyn
 
 test('service worker caches only an explicit shell and bypasses APIs, SSE, mutations, and external images', async () => {
   const source = await asset('service-worker.js');
-  assert.match(source, /raidnow-shell-v19/);
-  assert.doesNotMatch(source, /raidnow-shell-v18/);
+  assert.match(source, /raidnow-shell-v20/);
+  assert.doesNotMatch(source, /raidnow-shell-v19/);
   assert.match(source, /const SHELL_ASSETS = \[/);
   assert.match(source, /request\.method !== 'GET'/);
   assert.match(source, /url\.origin !== self\.location\.origin/);

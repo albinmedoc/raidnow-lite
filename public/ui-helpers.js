@@ -20,6 +20,25 @@ export function createBrowserResetController({ suspend, requestReset, resume, cl
   };
 }
 
+export function queueSelectionFromBosses(bosses) {
+  const pairs = [];
+  const seen = new Set();
+  for (const boss of Array.isArray(bosses) ? bosses : []) {
+    const rank = String(boss?.rank ?? '');
+    for (const value of Array.isArray(boss?.pokemon) ? boss.pokemon : []) {
+      const pokemon = String(value);
+      const key = `${rank}\u0000${pokemon}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      pairs.push({ rank, pokemon });
+    }
+  }
+  return {
+    ranks: pairs.map((pair) => pair.rank),
+    pokemon: pairs.map((pair) => pair.pokemon)
+  };
+}
+
 export function formatTrainerCode(value) {
   const digits = String(value || '').replace(/\D/g, '').slice(0, 12);
   if (!digits) return '—';

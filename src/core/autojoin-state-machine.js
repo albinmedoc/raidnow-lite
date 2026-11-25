@@ -104,16 +104,16 @@ function errorText(event) {
 function selectedRaid(snapshot, raids, now) {
   const selection = snapshot.search?.selection ?? {};
   const profile = snapshot.search?.profile ?? {};
-  const pokemon = new Set((selection.pokemon ?? []).map(String));
-  const ranks = new Set((selection.ranks ?? []).map(String));
+  const selectedPairs = new Set((selection.pokemon ?? []).map((pokemon, index) =>
+    `${String(selection.ranks?.[index] ?? '')}\u0000${String(pokemon)}`
+  ));
   const attempted = snapshot.search?.attemptedRaids ?? {};
   const nowMs = Date.parse(now);
   return (Array.isArray(raids) ? raids : [])
     .map((raid, index) => ({ raid, index, attemptedAt: attempted[String(raid?.rpl_id)] }))
     .filter(({ raid, attemptedAt }) =>
       raid?.rpl_id &&
-      pokemon.has(String(raid.rpl_pokemon)) &&
-      ranks.has(String(raid.rpl_rank)) &&
+      selectedPairs.has(`${String(raid.rpl_rank)}\u0000${String(raid.rpl_pokemon)}`) &&
       Number(raid.rpl_deleted || 0) === 0 &&
       Number(raid.my || 0) !== 1 &&
       (!Number(selection.hostLevel || 0) || Number(raid.rpl_level || 0) >= Number(selection.hostLevel)) &&

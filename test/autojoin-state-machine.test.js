@@ -904,6 +904,29 @@ test('attempted direct raid candidates expire after thirty seconds', () => {
   assert.equal(retried.operation.input.raidId, 'raid-1');
 });
 
+test('direct scanning matches exact rank and boss pairs instead of their Cartesian product', () => {
+  const scanning = {
+    ...initialSnapshot(), intent: 'search',
+    search: {
+      profile,
+      selection: { ...selection, strategy: 'fast', ranks: ['5', '10'], pokemon: ['150', '487'] },
+      nextQueuePollAt: null,
+      attemptedRaids: {}
+    },
+    operation: { opId: 'scan-pairs', kind: 'scanLobbies', input: {}, startedAt: now, attempt: 1 }
+  };
+  const result = reduce(scanning, {
+    type: 'operationSucceeded',
+    opId: 'scan-pairs',
+    value: [
+      { rpl_id: 'crossed', rpl_rank: '5', rpl_pokemon: '487' },
+      { rpl_id: 'selected', rpl_rank: '10', rpl_pokemon: '487' }
+    ]
+  }).snapshot;
+  assert.equal(result.operation.kind, 'joinRaid');
+  assert.equal(result.operation.input.raidId, 'selected');
+});
+
 test('direct scanning respects the different-country filter', () => {
   const scanning = {
     ...initialSnapshot(), intent: 'search',

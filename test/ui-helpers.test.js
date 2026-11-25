@@ -13,8 +13,20 @@ import {
   shouldShowEndedRaidNotice,
   mutationStatusDecision,
   activeRaidPresentation,
+  queueSelectionFromBosses,
   workflowStatusPresentation
 } from '../public/ui-helpers.js';
+
+test('builds paired queue arguments when selected bosses share a tier', () => {
+  assert.deepEqual(queueSelectionFromBosses([
+    { rank: '5', pokemon: ['150'] },
+    { rank: '5', pokemon: ['487'] },
+    { rank: '5', pokemon: ['150'] }
+  ]), {
+    ranks: ['5', '5'],
+    pokemon: ['150', '487']
+  });
+});
 
 test('formats a trainer code into selectable four-digit groups', () => {
   assert.equal(formatTrainerCode('999988887777'), '9999 8888 7777');

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'raidnow-shell-v19';
+const CACHE_NAME = 'raidnow-shell-v20';
 const SHELL_ASSETS = [
   '/',
   '/index.html',
