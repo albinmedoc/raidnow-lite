@@ -33,6 +33,13 @@ test('mock adapter exposes rated lobby players for UI verification', async () =>
   assert.equal(details.readyCount, 1);
 });
 
+test('mock adapter exposes demo profile history and blocks', async () => {
+  const adapter = new MockRaidNowAdapter();
+  assert.equal((await adapter.listJoinedHistory()).length, 1);
+  assert.equal((await adapter.listKickedHistory()).length, 1);
+  assert.equal((await adapter.listBlocks()).length, 1);
+});
+
 test('mock adapter leaves a matched demo raid without upstream writes', async () => {
   const adapter = new MockRaidNowAdapter({ matchAfterPolls: 1 });
   const raid = (await adapter.listRaids())[0];

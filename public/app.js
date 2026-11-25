@@ -446,6 +446,121 @@ async function loadProfile() {
   updateControls();
 }
 
+function showProfilePanel(panel) {
+  const historyVisible = panel === 'history';
+  const blocksVisible = panel === 'blocks';
+  $('#profileHistoryPanel').classList.toggle('hidden', !historyVisible);
+  $('#profileBlocksPanel').classList.toggle('hidden', !blocksVisible);
+  $('#showProfileHistory').setAttribute('aria-expanded', String(historyVisible));
+  $('#showProfileBlocks').setAttribute('aria-expanded', String(blocksVisible));
+}
+
+function renderProfileHistoryList(target, entries, statusLabel, emptyMessage) {
+  target.replaceChildren();
+  if (!Array.isArray(entries) || entries.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'profile-empty';
+    empty.textContent = emptyMessage;
+    target.append(empty);
+    return;
+  }
+  for (const entry of entries) {
+    const card = document.createElement('article');
+    card.className = 'profile-history-card';
+    if (entry.imageUrl) {
+      const image = document.createElement('img');
+      image.src = entry.imageUrl;
+      image.alt = '';
+      card.append(image);
+    }
+    const body = document.createElement('div');
+    body.className = 'profile-history-card-body';
+    const title = document.createElement('div');
+    title.className = 'profile-history-card-title';
+    const name = document.createElement('strong');
+    name.textContent = entry.pokemonName || 'Okänd Pokémon';
+    const status = document.createElement('span');
+    status.className = 'profile-history-status';
+    status.textContent = statusLabel;
+    title.append(name, status);
+    const host = document.createElement('p');
+    const hostFacts = [countryFlag(entry.country), entry.trainerName || 'Okänd host'];
+    if (Number(entry.level) > 0) hostFacts.push(`TL ${entry.level}`);
+    if (entry.rating !== null && entry.rating !== undefined) hostFacts.push(formatRaidRating(entry.rating).text);
+    host.textContent = hostFacts.filter(Boolean).join(' · ');
+    const time = document.createElement('p');
+    time.textContent = entry.displayTime || 'Tid saknas';
+    body.append(title, host, time);
+    card.append(body);
+    target.append(card);
+  }
+}
+
+function renderBlockedTrainers(entries) {
+  const target = $('#blockedTrainerList');
+  target.replaceChildren();
+  if (!Array.isArray(entries) || entries.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'profile-empty';
+    empty.textContent = 'Inga blockerade spelare.';
+    target.append(empty);
+    return;
+  }
+  for (const entry of entries) {
+    const card = document.createElement('div');
+    card.className = 'blocked-trainer-card';
+    const name = document.createElement('strong');
+    name.textContent = entry.trainerName || 'Okänd spelare';
+    const label = document.createElement('span');
+    label.className = 'muted';
+    label.textContent = 'Blockerad';
+    card.append(name, label);
+    target.append(card);
+  }
+}
+
+async function loadProfileHistory() {
+  showProfilePanel('history');
+  const button = $('#showProfileHistory');
+  const message = $('#profileHistoryMessage');
+  button.disabled = true;
+  message.className = 'form-message';
+  message.textContent = 'Hämtar historik…';
+  try {
+    const history = await api('/api/profile/history');
+    renderProfileHistoryList($('#joinedHistoryList'), history.joined, 'Deltagit', 'Ingen deltagarhistorik.');
+    renderProfileHistoryList($('#kickedHistoryList'), history.kicked, 'Kickad', 'Ingen kickhistorik.');
+    message.textContent = '';
+  } catch (error) {
+    message.className = 'form-message error';
+    message.textContent = `Kunde inte hämta historiken: ${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function loadProfileBlocks() {
+  showProfilePanel('blocks');
+  const button = $('#showProfileBlocks');
+  const message = $('#profileBlocksMessage');
+  button.disabled = true;
+  message.className = 'form-message';
+  message.textContent = 'Hämtar blockerade spelare…';
+  try {
+    const data = await api('/api/profile/blocks');
+    renderBlockedTrainers(data.blocks);
+    message.textContent = '';
+  } catch (error) {
+    message.className = 'form-message error';
+    message.textContent = `Kunde inte hämta blockerade spelare: ${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+$('#showProfileHistory').addEventListener('click', loadProfileHistory);
+$('#showProfileBlocks').addEventListener('click', loadProfileBlocks);
+
 $('#profileForm').addEventListener('submit', async (event) => {
   event.preventDefault();
   const message = $('#profileMessage'); message.className = 'form-message'; message.textContent = 'Sparar…';

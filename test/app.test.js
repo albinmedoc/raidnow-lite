@@ -173,6 +173,50 @@ test('rejects invalid profiles without saving them', async () => {
   } finally { await close(app); }
 });
 
+test('returns joined and kicked profile history without persisting it', async () => {
+  const joined = [{ raidId: 'raid-1', displayTime: 'Today', pokemonId: '150', pokemonName: 'Mewtwo', imageUrl: 'image.png', trainerName: 'Host1', level: 50, country: 'se', rating: 5, guest: { trainerName: 'hidden' }, cookieId: 'hidden' }];
+  const kicked = [{ raidId: 'raid-2', displayTime: 'Yesterday', pokemonId: '487', pokemonName: 'Giratina', trainerName: 'Host2', level: 40, country: 'world', rating: null, unknown: 'hidden' }];
+  const expected = {
+    joined: [{ displayTime: 'Today', pokemonId: '150', pokemonName: 'Mewtwo', imageUrl: 'image.png', trainerName: 'Host1', level: 50, country: 'se', rating: 5 }],
+    kicked: [{ displayTime: 'Yesterday', pokemonId: '487', pokemonName: 'Giratina', trainerName: 'Host2', level: 40, country: 'world', rating: null }]
+  };
+  const app = await startTestApp({
+    async listJoinedHistory() { return joined; },
+    async listKickedHistory() { return kicked; }
+  });
+  const before = app.readStore();
+  try {
+    const response = await fetch(`${app.baseUrl}/api/profile/history`);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.deepEqual(await response.json(), expected);
+    assert.deepEqual(app.readStore(), before);
+  } finally { await close(app); }
+});
+
+test('returns blocked trainers without persisting them', async () => {
+  const blocks = [{ blockId: 'block-1', trainerName: 'BlockedTrainer', cookieId: 'hidden' }];
+  const app = await startTestApp({ async listBlocks() { return blocks; } });
+  const before = app.readStore();
+  try {
+    const response = await fetch(`${app.baseUrl}/api/profile/blocks`);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.deepEqual(await response.json(), { blocks: [{ trainerName: 'BlockedTrainer' }] });
+    assert.deepEqual(app.readStore(), before);
+  } finally { await close(app); }
+});
+
+test('returns a typed unsupported response when profile reads are unavailable', async () => {
+  const app = await startTestApp({});
+  try {
+    for (const path of ['/api/profile/history', '/api/profile/blocks']) {
+      const response = await fetch(`${app.baseUrl}${path}`);
+      assert.equal(response.status, 501);
+    }
+  } finally { await close(app); }
+});
+
 test('returns the complete Auto Join boss list instead of homepage raid posts', async () => {
   let homepageListCalled = false;
   const app = await startTestApp({

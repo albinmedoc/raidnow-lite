@@ -89,8 +89,8 @@ test('browser periodically reconciles status when an SSE update is missed', asyn
 
 test('service worker caches only an explicit shell and bypasses APIs, SSE, mutations, and external images', async () => {
   const source = await asset('service-worker.js');
-  assert.match(source, /raidnow-shell-v21/);
-  assert.doesNotMatch(source, /raidnow-shell-v20/);
+  assert.match(source, /raidnow-shell-v22/);
+  assert.doesNotMatch(source, /raidnow-shell-v21/);
   assert.match(source, /const SHELL_ASSETS = \[/);
   assert.match(source, /request\.method !== 'GET'/);
   assert.match(source, /url\.origin !== self\.location\.origin/);
@@ -136,6 +136,24 @@ test('browser UI exposes local boss search, trainer identity, and safe reset con
   assert.match(html, /<option value="0">TL 5\+<\/option>/);
   assert.doesNotMatch(html, /<option value="5">TL 5\+<\/option>/);
   assert.doesNotMatch(html, /guest6|6 eller fler|Invite 6/i);
+});
+
+test('profile dialog lazily exposes history and blocked trainers', async () => {
+  const [html, source, css] = await Promise.all([
+    asset('index.html'),
+    asset('app.js'),
+    asset('styles.css')
+  ]);
+  for (const id of ['showProfileHistory', 'showProfileBlocks', 'profileHistoryPanel', 'joinedHistoryList', 'kickedHistoryList', 'profileBlocksPanel', 'blockedTrainerList']) {
+    assert.match(html, new RegExp(`id="${id}"`));
+  }
+  assert.match(source, /\/api\/profile\/history/);
+  assert.match(source, /\/api\/profile\/blocks/);
+  assert.match(source, /document\.createElement/);
+  assert.match(source, /\.textContent =/);
+  assert.match(css, /profile-history-card/);
+  assert.match(css, /profile-panel/);
+  assert.match(css, /blocked-trainer-card strong\{min-width:0;overflow-wrap:anywhere\}/);
 });
 
 test('boss cards are compact, omit Japanese labels, and use a local Dynamax icon', async () => {

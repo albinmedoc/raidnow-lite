@@ -23,6 +23,8 @@ const MUTATION_ROUTES = new Set([
 ]);
 const STATEFUL_API_METHODS = new Map([
   ['/api/profile', new Set(['GET', 'PUT'])],
+  ['/api/profile/history', new Set(['GET'])],
+  ['/api/profile/blocks', new Set(['GET'])],
   ['/api/login', new Set(['POST'])],
   ['/api/session/import', new Set(['POST'])],
   ['/api/config', new Set(['GET'])],
@@ -49,6 +51,25 @@ class HttpError extends Error {
 function sendJson(response, status, value) {
   response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
   response.end(JSON.stringify(value));
+}
+
+function publicProfileHistory(entries) {
+  if (!Array.isArray(entries)) throw new TypeError('Invalid profile history.');
+  return entries.map((entry) => ({
+    displayTime: entry?.displayTime,
+    pokemonId: entry?.pokemonId,
+    pokemonName: entry?.pokemonName,
+    imageUrl: entry?.imageUrl,
+    trainerName: entry?.trainerName,
+    level: entry?.level,
+    country: entry?.country,
+    rating: entry?.rating
+  }));
+}
+
+function publicBlocks(entries) {
+  if (!Array.isArray(entries)) throw new TypeError('Invalid blocked trainers.');
+  return entries.map((entry) => ({ trainerName: entry?.trainerName }));
 }
 
 async function readJson(request, maxBodyBytes) {
@@ -181,6 +202,25 @@ export function createApp({ adapter, store, sessionManager = null, pushNotifier 
         const profile = activeStore.get().profile ?? {};
         if (sessionManager && Object.keys(profile).length) await activeStore.update({ profile: {} });
         return sendJson(response, 200, profile);
+      }
+      if (request.method === 'GET' && url.pathname === '/api/profile/history') {
+        if (!activeAdapter.listJoinedHistory || !activeAdapter.listKickedHistory) {
+          return sendJson(response, 501, { message: 'Profile history is unavailable in this mode.' });
+        }
+        const [joined, kicked] = await Promise.all([
+          activeAdapter.listJoinedHistory(),
+          activeAdapter.listKickedHistory()
+        ]);
+        return sendJson(response, 200, {
+          joined: publicProfileHistory(joined),
+          kicked: publicProfileHistory(kicked)
+        });
+      }
+      if (request.method === 'GET' && url.pathname === '/api/profile/blocks') {
+        if (!activeAdapter.listBlocks) {
+          return sendJson(response, 501, { message: 'Blocked trainers are unavailable in this mode.' });
+        }
+        return sendJson(response, 200, { blocks: publicBlocks(await activeAdapter.listBlocks()) });
       }
       if (request.method === 'POST' && url.pathname === '/api/login') {
         if (restoreLocked) return sendJson(response, 409, { message: restoreFailure.error });

@@ -27,6 +27,19 @@ function assertBoolean(value) {
   if (typeof value !== 'boolean') throw protocolError();
 }
 
+function profileHistoryEntry(entry) {
+  return {
+    displayTime: entry.displayTime,
+    pokemonId: entry.pokemonId,
+    pokemonName: entry.pokemonName,
+    imageUrl: entry.imageUrl,
+    trainerName: entry.trainerName,
+    level: entry.level,
+    country: entry.country,
+    rating: entry.rating
+  };
+}
+
 function trainerArgs(profile, { code = false } = {}) {
   const args = [
     '--trainer-name', String(profile?.trainerName ?? ''),
@@ -113,6 +126,24 @@ export class CliRaidNowAdapter {
     this.#currentBosses = bosses;
     this.#currentBossesAt = Date.now();
     return bosses;
+  }
+
+  async listJoinedHistory({ signal } = {}) {
+    const data = await this.#run(['history', 'joined'], { signal });
+    assertObjectArray(data);
+    return data.map(profileHistoryEntry);
+  }
+
+  async listKickedHistory({ signal } = {}) {
+    const data = await this.#run(['history', 'kicked'], { signal });
+    assertObjectArray(data);
+    return data.map(profileHistoryEntry);
+  }
+
+  async listBlocks({ signal } = {}) {
+    const data = await this.#run(['blocks', 'list'], { signal });
+    assertObjectArray(data);
+    return data.map((entry) => ({ trainerName: entry.trainerName }));
   }
 
   async listRaids({

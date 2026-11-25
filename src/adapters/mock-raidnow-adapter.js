@@ -72,6 +72,24 @@ export class MockRaidNowAdapter {
     };
   }
 
+  async listJoinedHistory() {
+    return [{
+      displayTime: 'Idag 14:30', pokemonId: 'Giratina', pokemonName: 'Giratina',
+      trainerName: 'DemoHost', level: 50, country: 'se', rating: 5
+    }];
+  }
+
+  async listKickedHistory() {
+    return [{
+      displayTime: 'Igår 18:15', pokemonId: 'Zacian (Crowned Sword)', pokemonName: 'Zacian (Crowned Sword)',
+      trainerName: 'AnotherHost', level: 47, country: 'us', rating: 4
+    }];
+  }
+
+  async listBlocks() {
+    return [{ trainerName: 'VeryLongBlockedTrainerName12345' }];
+  }
+
   async leaveRaid(id) {
     const raid = this.#raids.find((item) => String(item.rpl_id) === String(id));
     if (!raid || raid.join !== 1) return { status: 'error', text: 'Raid membership not found.' };

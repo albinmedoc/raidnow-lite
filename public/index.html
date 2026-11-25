@@ -129,6 +129,23 @@
       <label>Land<select name="countryCode" required><option value="">Välj land</option><option value="se">Sverige</option><option value="dk">Danmark</option><option value="no">Norge</option><option value="fi">Finland</option><option value="de">Tyskland</option><option value="gb">Storbritannien</option><option value="us">USA</option><option value="jp">Japan</option><option value="world">Övrigt</option></select></label>
       <div class="wide modal-actions"><button class="primary" type="submit">Spara och fortsätt</button><span id="profileMessage" class="form-message"></span></div>
     </form>
+    <div class="profile-tools" aria-label="Profilinformation">
+      <button id="showProfileHistory" class="secondary" type="button" aria-expanded="false">Historik</button>
+      <button id="showProfileBlocks" class="secondary" type="button" aria-expanded="false">Blockerade spelare</button>
+    </div>
+    <section id="profileHistoryPanel" class="profile-panel hidden" aria-live="polite">
+      <div class="profile-panel-heading"><div><p class="eyebrow">HISTORIK</p><h3>Senaste raider</h3></div><span>Max 30 poster · senaste 3 månaderna</span></div>
+      <p id="profileHistoryMessage" class="form-message"></p>
+      <div class="profile-history-columns">
+        <div><h4>Deltagit</h4><div id="joinedHistoryList" class="profile-history-list"></div></div>
+        <div><h4>Kickad</h4><div id="kickedHistoryList" class="profile-history-list"></div></div>
+      </div>
+    </section>
+    <section id="profileBlocksPanel" class="profile-panel hidden" aria-live="polite">
+      <div class="profile-panel-heading"><div><p class="eyebrow">BLOCKERINGAR</p><h3>Blockerade spelare</h3></div></div>
+      <p id="profileBlocksMessage" class="form-message"></p>
+      <div id="blockedTrainerList" class="blocked-trainer-list"></div>
+    </section>
     <div class="browser-reset">
       <div><strong>Denna webbläsare</strong><p class="muted">Tar bort lokal profil, lokala val och den här webbläsarens serversession.</p></div>
       <button id="resetBrowser" class="danger" type="button">Återställ denna webbläsare</button>

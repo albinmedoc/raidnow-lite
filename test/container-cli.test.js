@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const rootUrl = new URL('../', import.meta.url);
-const cliRef = '1039e49e1d9d8b65f7bdff2f0de2d833cf93b151';
+const cliRef = '2f2b79433492cd2a85b84e63cf187d9588472483';
 
 test('container builds and verifies the exact pinned Raid NOW CLI source', async () => {
   const dockerfile = await readFile(new URL('Dockerfile', rootUrl), 'utf8');
@@ -30,6 +30,9 @@ test('final Node Alpine image contains only the pinned CLI binary and verifies i
   assert.match(dockerfile, /\\"command\\":\\"version\\"/);
   assert.match(dockerfile, /\\"status\\":\\"shown\\"/);
   assert.match(dockerfile, /\\"version\\":\\"\$\{RAIDNOW_CLI_REF\}\\"/);
+  for (const command of ['history joined', 'history kicked', 'blocks list']) {
+    assert.match(dockerfile, new RegExp(`/usr/local/bin/raidnow ${command} --help`));
+  }
 
   const finalStage = dockerfile.slice(dockerfile.lastIndexOf('FROM node:22-alpine'));
   assert.doesNotMatch(finalStage, /apk add[^\n]*(?:git|go)|COPY --from=[^\n]+\/(?:go|src|root\/\.cache)/);

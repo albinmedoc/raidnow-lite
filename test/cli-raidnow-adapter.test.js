@@ -109,6 +109,45 @@ test('translates the current boss catalog and forwards cancellation', async () =
   assertCall(runner.calls[0], ['bosses', 'list'], { signal: controller.signal });
 });
 
+test('reads joined and kicked profile history through the CLI contract', async () => {
+  const signal = new AbortController().signal;
+  const joined = [{
+    raidId: 'raid-1', displayTime: '11/25 15:00', pokemonId: '150', pokemonName: 'Mewtwo', imageUrl: 'mewtwo.png',
+    trainerName: 'HostOne', level: 50, country: 'se', rating: 5,
+    guest: { trainerName: 'GuestOne', level: 49, country: 'dk', rating: 4 }, cookieId: 'must-not-leak'
+  }];
+  const kicked = [{
+    raidId: 'raid-2', displayTime: '11/24 10:00', pokemonId: '487', pokemonName: 'Giratina',
+    trainerName: 'HostTwo', level: 45, country: 'world', rating: null, unknownFutureField: 'must-not-leak'
+  }];
+  const expectedJoined = [{
+    displayTime: '11/25 15:00', pokemonId: '150', pokemonName: 'Mewtwo', imageUrl: 'mewtwo.png',
+    trainerName: 'HostOne', level: 50, country: 'se', rating: 5
+  }];
+  const expectedKicked = [{
+    displayTime: '11/24 10:00', pokemonId: '487', pokemonName: 'Giratina', imageUrl: undefined,
+    trainerName: 'HostTwo', level: 45, country: 'world', rating: null
+  }];
+  const { adapter, runner } = createAdapter([
+    success('history joined', joined, 'listed'),
+    success('history kicked', kicked, 'listed')
+  ]);
+
+  assert.deepEqual(await adapter.listJoinedHistory({ signal }), expectedJoined);
+  assert.deepEqual(await adapter.listKickedHistory({ signal }), expectedKicked);
+  assertCall(runner.calls[0], ['history', 'joined'], { signal });
+  assertCall(runner.calls[1], ['history', 'kicked'], { signal });
+});
+
+test('reads blocked trainers through the CLI contract', async () => {
+  const signal = new AbortController().signal;
+  const blocks = [{ blockId: 'block-1', trainerName: 'BlockedTrainer', cookieId: 'must-not-leak' }];
+  const { adapter, runner } = createAdapter([success('blocks list', blocks, 'listed')]);
+
+  assert.deepEqual(await adapter.listBlocks({ signal }), [{ trainerName: 'BlockedTrainer' }]);
+  assertCall(runner.calls[0], ['blocks', 'list'], { signal });
+});
+
 test('maps every worker operation to the primitive CLI command', async () => {
   const signal = new AbortController().signal;
   const raid = {
