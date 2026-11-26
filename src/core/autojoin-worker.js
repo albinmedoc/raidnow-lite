@@ -27,10 +27,6 @@ function isExplicitTrue(value) {
   return value === true || value === 1 || value === '1';
 }
 
-function isExactRaidMembership(value) {
-  return value === 1 || value === '1';
-}
-
 function isExplicitZero(value) {
   return value === 0 || value === '0';
 }
@@ -60,9 +56,11 @@ async function probeRaidMembership(adapter, raidId, signal) {
   if (isExplicitTrue(players?.raidDeleted) || isExplicitTrue(raid?.rpl_deleted) || isExplicitTrue(raid?.deleted)) {
     return { membership: 'raid-ended', raid };
   }
-  if (isExactRaidMembership(raid?.join) || isExactRaidMembership(raid?.my) || players?.players?.some((player) => player?.isMe === true)) {
+  const playerListObserved = Array.isArray(players?.players);
+  if (playerListObserved && players.players.some((player) => player?.isMe === true)) {
     return { membership: 'present', raid };
   }
+  if (playerListObserved && players.players.length > 0) return { membership: 'absent', raid };
   if (isExplicitZero(raid?.join)) return { membership: 'absent', raid };
   return { membership: 'unknown', raid };
 }

@@ -724,6 +724,8 @@ test('hybrid match is published before queue cancellation and remains visible af
     async createMatching() { return { status: 'success' }; },
     async listRaidsForSelection() { return [{ rpl_id: 'direct-1', rpl_rank: '5', rpl_pokemon: 'Giratina' }]; },
     async joinRaidFast(id) { return { status: 'success', data: { rpl_id: id, rpl_pokemon: 'Giratina' } }; },
+    async findRaid(id) { return { rpl_id: id, join: 1, my: 1 }; },
+    async listRaidPlayers() { return { players: [{ isMe: true }], raidDeleted: false }; },
     async cancelMatching() { order.push('cancel'); throw new Error('cancel timeout'); },
     async checkMatching() { return { id: 'still-present' }; }
   };
@@ -753,7 +755,7 @@ test('leave proceeds to raid reconciliation after an in-flight queue cancellatio
     async cancelMatching() { return new Promise((resolve) => { resolveCancel = resolve; }); },
     async checkMatching() { queueChecks += 1; order.push('queue'); return {}; },
     async findRaid() { membershipChecks += 1; order.push('raid'); return { rpl_id: 'raid-1', join: 1 }; },
-    async listRaidPlayers() { return { players: [] }; },
+    async listRaidPlayers() { return { players: [{ isMe: true }] }; },
     async leaveRaid() { leaves += 1; order.push('leave'); return { status: 'success' }; }
   };
   const worker = new AutoJoinWorker({ adapter, pollIntervalMs: 100, clock });
@@ -832,7 +834,7 @@ test('the direct adapter completes an exact started-raid leave rejection locally
       };
     }
     if (type === 'child_list') {
-      return { ok: true, status: 200, async text() { return JSON.stringify({ list: [], rpl_delete: 0 }); } };
+      return { ok: true, status: 200, async text() { return JSON.stringify({ list: [{ my: 1 }], rpl_delete: 0 }); } };
     }
     if (type === 'line_matching_cancel') {
       return new Promise((_resolve, reject) => {
@@ -876,7 +878,11 @@ test('a longer leave rejection containing the started phrase is not treated as l
     code: 'UPSTREAM_REJECTION', exitCode: 7, command: 'raid leave', status: 'rejected'
   });
   const worker = new AutoJoinWorker({
-    adapter: { async leaveRaid() { throw rejection; }, async findRaid() { return { rpl_id: 'raid-started', join: 1 }; } },
+    adapter: {
+      async leaveRaid() { throw rejection; },
+      async findRaid() { return { rpl_id: 'raid-started', join: 1 }; },
+      async listRaidPlayers() { return { players: [{ isMe: true }] }; }
+    },
     clock,
     matchedValidationIntervalMs: 100,
     persist: async () => {}
@@ -1141,7 +1147,7 @@ test('recovery leave after an interrupted leave probes membership before any sec
     {
       name: 'present membership permits exactly one new leave write',
       exact: async () => ({ rpl_id: 'raid-1', join: 1 }),
-      players: async () => { throw new Error('players failed'); },
+      players: async () => ({ players: [{ isMe: true }], raidDeleted: false }),
       expectedLeaves: 1,
       expectedState: 'idle'
     },
@@ -1245,7 +1251,7 @@ test('read-only recovery returns a typed not-dispatched 501 only after presence 
   const worker = new AutoJoinWorker({
     adapter: {
       async findRaid(id) { reads.push(`exact:${id}`); return { rpl_id: id, join: 1 }; },
-      async listRaidPlayers(id) { reads.push(`players:${id}`); return { players: [], raidDeleted: false }; }
+      async listRaidPlayers(id) { reads.push(`players:${id}`); return { players: [{ isMe: true }], raidDeleted: false }; }
     },
     pollIntervalMs: 100,
     matchedValidationIntervalMs: 100,
@@ -1312,7 +1318,7 @@ test('confirmed leave projects cleanup and durable terminal completion notices',
   const worker = new AutoJoinWorker({
     adapter: {
       async findRaid() { return { rpl_id: 'raid-1', join: 1 }; },
-      async listRaidPlayers() { return { players: [] }; },
+      async listRaidPlayers() { return { players: [{ isMe: true }] }; },
       async leaveRaid() { return { status: 'success' }; },
       async cancelMatching() { return new Promise((resolve) => { resolveCancel = resolve; }); },
       async checkMatching() { return {}; }
@@ -1526,7 +1532,9 @@ test('late fast join success after stop becomes matched', async () => {
   let resolveJoin;
   const adapter = {
     async listRaidsForSelection() { return [{ rpl_id: 'late', rpl_rank: '5', rpl_pokemon: 'Giratina' }]; },
-    async joinRaidFast(id) { return new Promise((resolve) => { resolveJoin = () => resolve({ status: 'success', data: { rpl_id: id } }); }); }
+    async joinRaidFast(id) { return new Promise((resolve) => { resolveJoin = () => resolve({ status: 'success', data: { rpl_id: id } }); }); },
+    async findRaid(id) { return { rpl_id: id, join: 1, my: 1 }; },
+    async listRaidPlayers() { return { players: [{ isMe: true }], raidDeleted: false }; }
   };
   const worker = new AutoJoinWorker({ adapter, pollIntervalMs: 100, clock });
   await worker.start({ profile, selection: { ...selection, strategy: 'fast' } });
@@ -1604,7 +1612,7 @@ test('reconcileRaid calls both membership readers for the uncertain target', asy
   const worker = new AutoJoinWorker({
     adapter: {
       async findRaid(id) { ids.push(`exact:${id}`); return { rpl_id: id, join: 1 }; },
-      async listRaidPlayers(id) { ids.push(`players:${id}`); return { players: [] }; }
+      async listRaidPlayers(id) { ids.push(`players:${id}`); return { players: [{ isMe: true }] }; }
     },
     pollIntervalMs: 100,
     clock
@@ -1670,11 +1678,11 @@ test('membership probe combines exact and player evidence conservatively before 
       expectedMembership: 'none'
     },
     {
-      name: 'exact my proves presence when players fail',
+      name: 'exact my remains unknown when players fail',
       exact: async () => ({ rpl_id: 'raid-1', my: 1 }),
       players: async () => { throw new Error('players failed'); },
-      expectedLeaves: 1,
-      expectedMembership: 'none'
+      expectedLeaves: 0,
+      expectedMembership: 'unknown'
     },
     {
       name: 'exact join zero proves absence',
@@ -1684,11 +1692,11 @@ test('membership probe combines exact and player evidence conservatively before 
       expectedMembership: 'none'
     },
     {
-      name: 'exact null and players without me remain unknown',
+      name: 'populated player list without me proves absence',
       exact: async () => null,
       players: async () => ({ players: [{ isMe: false }], raidDeleted: false }),
       expectedLeaves: 0,
-      expectedMembership: 'unknown'
+      expectedMembership: 'none'
     },
     {
       name: 'both read failures remain unknown',
@@ -1771,8 +1779,8 @@ test('malformed membership markers never authorize leave regardless of read comp
       await flush();
 
       assert.equal(leaves, 0);
-      assert.equal(worker.status().raidMembership, 'unknown');
-      assert.equal(worker.status().raid.rpl_pokemon, 'Saved boss');
+      assert.equal(worker.status().raidMembership, 'none');
+      assert.equal(worker.status().raid, null);
       worker.shutdown();
     });
   }
@@ -1847,10 +1855,11 @@ test('malformed CLI identity booleans cannot authorize a leave write', async (t)
       });
 
       await clock.tick(0);
-      await waitFor(worker, (status) => Boolean(status.lastError));
+      await waitFor(worker, (status) => status.state === 'idle' || Boolean(status.lastError));
       assert.equal(leaves, 0);
-      assert.equal(worker.status().raidMembership, 'unknown');
-      assert.equal(worker.status().raid.rpl_pokemon, 'Saved boss');
+      assert.ok(['none', 'unknown'].includes(worker.status().raidMembership));
+      if (worker.status().raidMembership === 'none') assert.equal(worker.status().raid, null);
+      else assert.equal(worker.status().raid.rpl_pokemon, 'Saved boss');
       worker.shutdown();
     });
   }
@@ -1880,6 +1889,64 @@ test('player-only presence preserves saved raid details during matched reconcili
   worker.shutdown();
 });
 
+test('matched validation clears a stale match when the player list confirms the trainer is absent', async (t) => {
+  const clock = new FakeClock();
+  const worker = new AutoJoinWorker({
+    adapter: {
+      async findRaid() { return { rpl_id: 'raid-1', join: 1, my: 1 }; },
+      async listRaidPlayers() {
+        return { players: [{ isMe: false }, { isMe: false }], raidDeleted: false };
+      }
+    },
+    matchedValidationIntervalMs: 25,
+    clock
+  });
+  t.after(() => worker.shutdown());
+  await worker.restore({
+    ...initialSnapshot(),
+    raid: { state: 'matched', target: 'raid-1', value: { rpl_id: 'raid-1', join: 1 } },
+    wake: { kind: 'revalidateMatched', dueAt: new Date(clock.now()).toISOString() },
+    terminal: { target: 'matched', error: null }
+  });
+
+  await clock.tick(0);
+  await waitFor(worker, (status) => status.state === 'idle');
+  assert.equal(worker.status().raid, null);
+});
+
+test('membership verification never publishes a match from join markers without isMe confirmation', async (t) => {
+  const clock = new FakeClock();
+  let matchedEvents = 0;
+  const worker = new AutoJoinWorker({
+    adapter: {
+      async findRaid() { return { rpl_id: 'raid-1', join: 1, my: 1 }; },
+      async listRaidPlayers() { return { players: [], raidDeleted: false }; }
+    },
+    pollIntervalMs: 25,
+    clock
+  });
+  worker.on('matched', () => { matchedEvents += 1; });
+  t.after(() => worker.shutdown());
+  await worker.restore({
+    ...initialSnapshot(),
+    intent: 'search',
+    search: {
+      profile: { trainerName: 'Albin123', trainerCode: '123456789012', level: 50, countryCode: 'se' },
+      selection: { strategy: 'auto', ranks: ['5'], pokemon: ['Giratina'] },
+      attemptedRaids: {}
+    },
+    queue: { state: 'none' },
+    raid: { state: 'unknown', target: 'raid-1', value: { rpl_id: 'raid-1', join: 1 }, origin: 'queue-match' },
+    wake: { kind: 'reconcileRaid', dueAt: new Date(clock.now()).toISOString() },
+    terminal: { target: 'searching', error: null }
+  });
+
+  await clock.tick(0);
+  await waitFor(worker, (status) => status.state === 'reconciling');
+  assert.equal(matchedEvents, 0);
+  assert.notEqual(worker.status().state, 'matched');
+});
+
 test('matched validation executes both reads and retries unknown membership until confirmed absent', async (t) => {
   const clock = new FakeClock();
   const responses = [
@@ -1893,7 +1960,7 @@ test('matched validation executes both reads and retries unknown membership unti
   const worker = new AutoJoinWorker({
     adapter: {
       async findRaid() { exactCalls += 1; return responses.shift(); },
-      async listRaidPlayers() { playerCalls += 1; return { players: [{ isMe: false }], raidDeleted: false }; }
+      async listRaidPlayers() { playerCalls += 1; return { players: [], raidDeleted: false }; }
     },
     matchedValidationIntervalMs: 25,
     clock
@@ -1930,7 +1997,7 @@ test('matched validation retains and retries on unknown evidence, then clears on
       },
       async listRaidPlayers() {
         playerCalls += 1;
-        if (playerCalls === 1) return { players: [{ isMe: false }], raidDeleted: false };
+        if (playerCalls === 1) return { players: [], raidDeleted: false };
         return { players: [], raidDeleted: true };
       }
     },
@@ -1956,7 +2023,7 @@ test('matched validation retains and retries on unknown evidence, then clears on
   assert.equal(worker.status().raid, null);
 });
 
-test('leave requested during active matched validation wins after join=1 confirmation', async (t) => {
+test('leave requested during active matched validation wins after isMe confirmation', async (t) => {
   const clock = new FakeClock();
   let resolveValidation;
   let validationStarted = false;
@@ -1967,7 +2034,7 @@ test('leave requested during active matched validation wins after join=1 confirm
         validationStarted = true;
         return new Promise((resolve) => { resolveValidation = resolve; });
       },
-      async listRaidPlayers() { return { players: [] }; },
+      async listRaidPlayers() { return { players: [{ isMe: true }] }; },
       async leaveRaid(id) { leaves.push(id); return { status: 'success' }; }
     },
     matchedValidationIntervalMs: 25,

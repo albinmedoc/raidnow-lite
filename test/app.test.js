@@ -315,6 +315,9 @@ test('starts server-owned Auto Join and reaches matched state', async () => {
     async createMatching() { return { status: 'success' }; },
     async pollMatching() { polls++; return polls < 2 ? { status: 'success', rpllm_status: 1 } : { status: 'success', rpllm_status: 2, rpllm_rpl_id: '1' }; },
     async findRaid() { return { rpl_id: '1', rpl_pokemon: 'Giratina', rpl_code: '999988887777' }; },
+    async listRaidPlayers() {
+      return { players: [{ trainerName: 'Albin123', level: 50, isMe: true }], count: 1, readyCount: 0, raidDeleted: false };
+    },
     async cancelMatching() { return { status: 'success' }; }
   };
   const app = await startTestApp(adapter);
@@ -489,7 +492,9 @@ test('refreshes exact raid details so direct matches expose the host trainer cod
       exactLookups += 1;
       return { rpl_id: 'direct-raid', rpl_pokemon: 'Giratina', rpl_tid: 'HostOne', rpl_code: '999988887777' };
     },
-    async listRaidPlayers() { return { players: [], count: 1, readyCount: 0 }; }
+    async listRaidPlayers() {
+      return { players: [{ trainerName: 'Albin123', level: 50, isMe: true }], count: 1, readyCount: 0 };
+    }
   };
   const app = await startTestApp(adapter);
   try {
@@ -547,6 +552,57 @@ test('ended active raid returns a recovery response and resumes the saved search
   } finally { await close(app); }
 });
 
+test('active raid refresh clears a stale match when a populated player list does not contain the trainer', async () => {
+  const adapter = {
+    async findRaid() { return { rpl_id: 'raid-stale', rpl_pokemon: 'Giratina', join: 1, my: 1 }; },
+    async listRaidPlayers() {
+      return {
+        players: [
+          { trainerName: 'PlayerOne', level: 50, isMe: false },
+          { trainerName: 'PlayerTwo', level: 48, isMe: false }
+        ],
+        count: 2,
+        readyCount: 1,
+        raidDeleted: false
+      };
+    },
+    async checkMatching() { return {}; },
+    async createMatching() { return { status: 'success' }; },
+    async pollMatching() { return {}; },
+    async listRaidsForSelection() { return []; }
+  };
+  const app = await startTestApp(adapter);
+  try {
+    await app.worker.restore({
+      schemaVersion: 2,
+      intent: 'search',
+      startedAt: '2026-11-21T20:00:00.000Z',
+      search: {
+        profile: { trainerName: 'Albin123', trainerCode: '123456789012', level: 50, countryCode: 'se' },
+        selection: { strategy: 'hybrid', ranks: ['5'], pokemon: ['Giratina'] },
+        nextQueuePollAt: null,
+        attemptedRaids: {}
+      },
+      queue: { state: 'none' },
+      raid: { state: 'matched', target: 'raid-stale', value: { rpl_id: 'raid-stale', rpl_pokemon: 'Giratina', join: 1 } },
+      operation: null,
+      wake: { kind: 'revalidateMatched', dueAt: new Date(Date.now() + 60_000).toISOString() },
+      terminal: { target: 'matched', error: null },
+      lastContactAt: null,
+      retryCount: 0,
+      lastError: null,
+      opSequence: 2
+    });
+
+    const response = await fetch(`${app.baseUrl}/api/active-raid`);
+    assert.equal(response.status, 410);
+    const body = await response.json();
+    assert.equal(body.code, 'RAID_ENDED');
+    assert.match(body.message, /inte längre med i raiden/i);
+    assert.notEqual(app.worker.status().state, 'matched');
+  } finally { await close(app); }
+});
+
 test('active raid player refresh survives an exact-detail lookup failure', async () => {
   const adapter = {
     async createMatching() { return { status: 'success' }; },
@@ -578,14 +634,20 @@ test('reconciles an unknown ready write before allowing another attempt', async 
     { name: 'guest missing from reconciliation read', players: [], status: 409, body: { code: 'READY_OUTCOME_UNKNOWN', retryAllowed: false } }
   ]) {
     await t.test(scenario.name, async () => {
+      let playerReads = 0;
       const adapter = {
         async createMatching() { return { status: 'success' }; },
         async listRaidsForSelection() { return [{ rpl_id: 'raid-1', rpl_rank: '5', rpl_pokemon: 'Giratina', rpl_tid: 'HostOne' }]; },
         async joinRaidFast() { return { status: 'success' }; },
+        async findRaid() { return { rpl_id: 'raid-1', join: 1, my: 1 }; },
         async markRaidReady() {
           throw new CliCommandError({ code: 'WRITE_OUTCOME_UNKNOWN', exitCode: 9, command: 'raid ready', status: 'failed', message: 'Write outcome is unknown.' });
         },
-        async listRaidPlayers() { return { players: scenario.players, count: scenario.players.length, readyCount: scenario.players.filter((player) => player.ready).length }; }
+        async listRaidPlayers() {
+          playerReads += 1;
+          const players = playerReads === 1 ? [{ isMe: true, ready: 0 }] : scenario.players;
+          return { players, count: players.length, readyCount: players.filter((player) => player.ready).length };
+        }
       };
       const app = await startTestApp(adapter);
       try {
@@ -664,7 +726,7 @@ test('leave route probes unknown durable raid membership before writing', async 
   const order = [];
   const app = await startTestApp({
     async findRaid(id) { order.push(`probe:${id}`); return { rpl_id: id, join: 1 }; },
-    async listRaidPlayers(id) { order.push(`players:${id}`); return { players: [] }; },
+    async listRaidPlayers(id) { order.push(`players:${id}`); return { players: [{ isMe: true }] }; },
     async leaveRaid(id) { order.push(`leave:${id}`); leftId = id; return { status: 'success' }; }
   });
   try {
@@ -726,7 +788,7 @@ test('leave route returns typed 501 after reads confirm a write is required', as
   const reads = [];
   const app = await startTestApp({
     async findRaid(id) { reads.push(`exact:${id}`); return { rpl_id: id, join: 1 }; },
-    async listRaidPlayers(id) { reads.push(`players:${id}`); return { players: [], raidDeleted: false }; }
+    async listRaidPlayers(id) { reads.push(`players:${id}`); return { players: [{ isMe: true }], raidDeleted: false }; }
   });
   try {
     await app.worker.restore({

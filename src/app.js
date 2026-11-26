@@ -291,11 +291,16 @@ export function createApp({ adapter, store, sessionManager = null, pushNotifier 
         const details = detailsResult.status === 'fulfilled' ? detailsResult.value : null;
         const exactRaid = exactResult.status === 'fulfilled' ? exactResult.value : null;
         const exactRaidMissing = Boolean(activeAdapter.findRaid) && exactResult.status === 'fulfilled' && exactRaid === null;
-        if (details?.raidDeleted === true || (detailsResult.status === 'rejected' && exactRaidMissing)) {
+        const trainerMissingFromPopulatedRaid = Array.isArray(details?.players)
+          && details.players.length > 0
+          && !details.players.some((player) => player?.isMe === true);
+        if (details?.raidDeleted === true || (detailsResult.status === 'rejected' && exactRaidMissing) || trainerMissingFromPopulatedRaid) {
           await worker.matchedRaidEnded(raidId);
           return sendJson(response, 410, {
             code: 'RAID_ENDED',
-            message: 'Raiden har avslutats. Sökningen återupptas.'
+            message: trainerMissingFromPopulatedRaid
+              ? 'Du är inte längre med i raiden. Sökningen återupptas.'
+              : 'Raiden har avslutats. Sökningen återupptas.'
           });
         }
         if (detailsResult.status === 'rejected') throw detailsResult.reason;

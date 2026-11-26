@@ -596,13 +596,29 @@ export function reduceAutoJoin(current, event, config) {
         }
         return withWake(next, 'scan', now, scanIntervalMs);
       }
-      if (Number(candidate.join || 0) === 1) return matchRaid(next, candidate, now, matchedValidationIntervalMs);
+      if (Number(candidate.join || 0) === 1) {
+        const raidId = String(candidate.rpl_id);
+        const attemptedRaids = { ...(next.search?.attemptedRaids ?? {}) };
+        attemptedRaids[raidId] = now;
+        return withOperation({
+          ...next,
+          search: { ...next.search, attemptedRaids },
+          raid: { state: 'unknown', target: raidId, value: clone(candidate) }
+        }, 'verifyMembership', { raidId }, now);
+      }
       next.search.attemptedRaids[String(candidate.rpl_id)] = now;
       return withOperation({ ...next, raid: { state: 'joining', target: String(candidate.rpl_id), value: clone(candidate) } }, 'joinRaid', { raid: candidate, raidId: candidate.rpl_id, profile: next.search.profile }, now);
     }
     if (kind === 'joinRaid') {
       const raid = value?.data || snapshot.operation.input.raid || snapshot.raid.value;
-      return matchRaid(snapshot, raid, now, matchedValidationIntervalMs);
+      const raidId = String(snapshot.operation.input.raidId ?? raid?.rpl_id ?? snapshot.raid.target ?? '');
+      const pendingRaid = membershipRaid(snapshot, { raid });
+      return withOperation({
+        ...snapshot,
+        raid: { state: 'unknown', target: raidId, value: pendingRaid },
+        operation: null,
+        lastContactAt: now
+      }, 'verifyMembership', { raidId }, now);
     }
     if (kind === 'verifyMatched') {
       const membership = membershipResult(value);
@@ -684,6 +700,18 @@ export function reduceAutoJoin(current, event, config) {
           workflowNotice: workflowNotice('raid-reconciliation-failed')
         }, 'reconcileRaid', now, pollIntervalMs);
       }
+      if ((snapshot.raid.origin === 'queue-match' || snapshot.operation.input?.origin === 'queue-match') && snapshot.intent === 'search') {
+        return withOperation({
+          ...snapshot,
+          search: { ...snapshot.search, recovering: true },
+          queue: { state: 'unknown' },
+          raid: { state: 'none', target: null, value: null },
+          operation: null,
+          lastContactAt: now,
+          retryCount: 0,
+          lastError: null
+        }, 'checkQueue', {}, now);
+      }
       const next = {
         ...snapshot,
         raid: { state: 'none', target: null, value: null },
@@ -700,12 +728,13 @@ export function reduceAutoJoin(current, event, config) {
     if (kind === 'pollQueue') {
       const next = { ...snapshot, operation: null, lastContactAt: now };
       if (Number(value?.rpllm_status) === 2 && value?.rpllm_rpl_id) {
-        return matchRaid(
-          { ...next, queue: { state: 'none' } },
-          value.raid || { rpl_id: value.rpllm_rpl_id, rpl_pokemon: value.pokemon },
-          now,
-          matchedValidationIntervalMs
-        );
+        const raidId = String(value.rpllm_rpl_id);
+        const raid = value.raid || { rpl_id: raidId, rpl_pokemon: value.pokemon };
+        return withOperation({
+          ...next,
+          queue: { state: 'none' },
+          raid: { state: 'unknown', target: raidId, value: clone(raid), origin: 'queue-match' }
+        }, 'verifyMembership', { raidId, origin: 'queue-match' }, now);
       }
       if (next.intent === 'stop' || next.intent === 'leave') return beginQueueCleanup(next, now, matchedValidationIntervalMs);
       return withWake(next, next.search?.selection?.strategy === 'hybrid' && !next.search?.directScanDisabled ? 'scan' : 'pollQueue', now, next.search?.selection?.strategy === 'hybrid' && !next.search?.directScanDisabled ? scanIntervalMs : pollIntervalMs);

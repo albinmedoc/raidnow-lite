@@ -30,6 +30,125 @@ test('start creates one durable queue operation', () => {
   assert.deepEqual(effects[0], { type: 'adapter', opId: snapshot.operation.opId });
 });
 
+test('queue assignment requires membership verification before publishing a match', () => {
+  const polling = {
+    ...initialSnapshot(),
+    intent: 'search',
+    search: { profile, selection, attemptedRaids: {} },
+    queue: { state: 'present' },
+    operation: { opId: 'poll-1', kind: 'pollQueue', input: {}, attempt: 1 }
+  };
+
+  const { snapshot, effects } = reduce(polling, {
+    type: 'operationSucceeded',
+    opId: 'poll-1',
+    value: {
+      status: 'success',
+      rpllm_status: 2,
+      rpllm_rpl_id: 'raid-1',
+      raid: { rpl_id: 'raid-1', rpl_pokemon: 'Giratina', join: 1 }
+    }
+  });
+
+  assert.equal(snapshot.queue.state, 'none');
+  assert.equal(snapshot.raid.state, 'unknown');
+  assert.equal(snapshot.raid.target, 'raid-1');
+  assert.equal(snapshot.operation.kind, 'verifyMembership');
+  assert.equal(effects.some((effect) => effect.type === 'matched'), false);
+});
+
+test('rejected queue assignment reconciles and recreates the queue before resuming', () => {
+  const polling = {
+    ...initialSnapshot(),
+    intent: 'search',
+    search: { profile, selection, attemptedRaids: {} },
+    queue: { state: 'present' },
+    operation: { opId: 'poll-stale', kind: 'pollQueue', input: {}, attempt: 1 }
+  };
+  let snapshot = reduce(polling, {
+    type: 'operationSucceeded',
+    opId: 'poll-stale',
+    value: { rpllm_status: 2, rpllm_rpl_id: 'stale', raid: { rpl_id: 'stale', join: 1 } }
+  }).snapshot;
+  snapshot = reduce(snapshot, {
+    type: 'operationSucceeded',
+    opId: snapshot.operation.opId,
+    value: { membership: 'unknown', raid: { rpl_id: 'stale', join: 1 } }
+  }).snapshot;
+  assert.equal(snapshot.wake.kind, 'reconcileRaid');
+  snapshot = reduce(snapshot, { type: 'wake', kind: 'reconcileRaid' }).snapshot;
+  snapshot = reduce(snapshot, {
+    type: 'operationSucceeded',
+    opId: snapshot.operation.opId,
+    value: { membership: 'absent', raid: { rpl_id: 'stale', join: 0 } }
+  }).snapshot;
+
+  assert.equal(snapshot.queue.state, 'unknown');
+  assert.equal(snapshot.search.recovering, true);
+  assert.equal(snapshot.operation.kind, 'checkQueue');
+
+  snapshot = reduce(snapshot, {
+    type: 'operationSucceeded',
+    opId: snapshot.operation.opId,
+    value: { id: '' }
+  }).snapshot;
+  assert.equal(snapshot.queue.state, 'creating');
+  assert.equal(snapshot.operation.kind, 'createQueue');
+});
+
+test('restore preserves queue-match recovery across in-flight membership verification', () => {
+  const polling = {
+    ...initialSnapshot(),
+    intent: 'search',
+    search: { profile, selection, attemptedRaids: {} },
+    queue: { state: 'present' },
+    operation: { opId: 'poll-restore', kind: 'pollQueue', input: {}, attempt: 1 }
+  };
+  let snapshot = reduce(polling, {
+    type: 'operationSucceeded',
+    opId: 'poll-restore',
+    value: { rpllm_status: 2, rpllm_rpl_id: 'stale', raid: { rpl_id: 'stale', join: 1 } }
+  }).snapshot;
+  snapshot = migrateSnapshot(snapshot, now, 15_000);
+  assert.equal(snapshot.raid.origin, 'queue-match');
+  assert.equal(snapshot.wake.kind, 'reconcileRaid');
+
+  snapshot = reduce(snapshot, { type: 'wake', kind: 'reconcileRaid' }).snapshot;
+  snapshot = reduce(snapshot, {
+    type: 'operationSucceeded',
+    opId: snapshot.operation.opId,
+    value: { membership: 'absent', raid: { rpl_id: 'stale', join: 0 } }
+  }).snapshot;
+  assert.equal(snapshot.operation.kind, 'checkQueue');
+  assert.equal(snapshot.queue.state, 'unknown');
+});
+
+test('successful direct join requires membership verification before publishing a match', () => {
+  const joining = {
+    ...initialSnapshot(),
+    intent: 'search',
+    search: { profile, selection, attemptedRaids: {} },
+    raid: { state: 'joining', target: 'raid-1', value: { rpl_id: 'raid-1', rpl_pokemon: 'Giratina' } },
+    operation: {
+      opId: 'join-1',
+      kind: 'joinRaid',
+      input: { raidId: 'raid-1', raid: { rpl_id: 'raid-1', rpl_pokemon: 'Giratina' } },
+      attempt: 1
+    }
+  };
+
+  const { snapshot, effects } = reduce(joining, {
+    type: 'operationSucceeded',
+    opId: 'join-1',
+    value: { status: 'success' }
+  });
+
+  assert.equal(snapshot.raid.state, 'unknown');
+  assert.equal(snapshot.raid.target, 'raid-1');
+  assert.equal(snapshot.operation.kind, 'verifyMembership');
+  assert.equal(effects.some((effect) => effect.type === 'matched'), false);
+});
+
 test('definite create reject unlocks resources while timeout keeps queue unknown', () => {
   const started = reduce(initialSnapshot(), { type: 'start', profile, selection }).snapshot;
   const rejected = reduce(started, { type: 'operationRejected', opId: started.operation.opId, error: 'rejected', definite: true }).snapshot;
@@ -110,7 +229,13 @@ test('late join success after stop becomes matched', () => {
   assert.equal(snapshot.operation.kind, 'joinRaid');
   snapshot = reduce(snapshot, { type: 'stop' }).snapshot;
   assert.equal(snapshot.raid.state, 'unknown');
-  const joined = reduce(snapshot, { type: 'operationSucceeded', opId: snapshot.operation.opId, value: { status: 'success', data: { rpl_id: 'raid-1' } } }).snapshot;
+  snapshot = reduce(snapshot, { type: 'operationSucceeded', opId: snapshot.operation.opId, value: { status: 'success', data: { rpl_id: 'raid-1' } } }).snapshot;
+  assert.equal(snapshot.raid.state, 'unknown');
+  const joined = reduce(snapshot, {
+    type: 'operationSucceeded',
+    opId: snapshot.operation.opId,
+    value: { membership: 'present', raid: { rpl_id: 'raid-1', join: 1 } }
+  }).snapshot;
   assert.equal(joined.raid.state, 'matched');
   assert.equal(joined.raid.value.rpl_id, 'raid-1');
   assert.equal(joined.wake.kind, 'revalidateMatched');
@@ -125,10 +250,15 @@ test('blank join details preserve the canonical target and saved controls', () =
     opId: snapshot.operation.opId,
     value: [{ rpl_id: 'raid-1', rpl_rank: '5', rpl_pokemon: 'Giratina', rpl_tid: 'Saved host', rpl_code: '999988887777' }]
   }).snapshot;
-  const joined = reduce(snapshot, {
+  snapshot = reduce(snapshot, {
     type: 'operationSucceeded',
     opId: snapshot.operation.opId,
     value: { status: 'success', data: { rpl_id: '  ', rpl_pokemon: '', rpl_tid: null, rpl_code: undefined } }
+  }).snapshot;
+  const joined = reduce(snapshot, {
+    type: 'operationSucceeded',
+    opId: snapshot.operation.opId,
+    value: { membership: 'present', raid: { rpl_id: 'raid-1', join: 1 } }
   }).snapshot;
 
   assert.equal(joined.raid.state, 'matched');
@@ -138,7 +268,8 @@ test('blank join details preserve the canonical target and saved controls', () =
     rpl_rank: '5',
     rpl_pokemon: 'Giratina',
     rpl_tid: 'Saved host',
-    rpl_code: '999988887777'
+    rpl_code: '999988887777',
+    join: 1
   });
 });
 
@@ -890,6 +1021,54 @@ test('hybrid read failures keep direct scan cadence and queue due time', () => {
   const pollFailed = reduce(polling, { type: 'operationRejected', opId: 'poll-1', error: 'poll failed', definite: true }).snapshot;
   assert.equal(pollFailed.wake.kind, 'scan');
   assert.equal(pollFailed.wake.dueAt, '2026-11-11T10:00:01.000Z');
+});
+
+test('direct scan membership marker is verified before publishing a match', () => {
+  const scanning = {
+    ...initialSnapshot(), intent: 'search',
+    search: { profile, selection: { ...selection, strategy: 'fast' }, nextQueuePollAt: null, attemptedRaids: {} },
+    operation: { opId: 'scan-joined', kind: 'scanLobbies', input: {}, startedAt: now, attempt: 1 }
+  };
+
+  const { snapshot, effects } = reduce(scanning, {
+    type: 'operationSucceeded',
+    opId: 'scan-joined',
+    value: [{ rpl_id: 'raid-1', rpl_rank: '5', rpl_pokemon: 'Giratina', join: 1 }]
+  });
+
+  assert.equal(snapshot.raid.state, 'unknown');
+  assert.equal(snapshot.operation.kind, 'verifyMembership');
+  assert.equal(effects.some((effect) => effect.type === 'matched'), false);
+});
+
+test('rejected stale scan membership marker is cooled down so another lobby can be joined', () => {
+  const stale = { rpl_id: 'stale', rpl_rank: '5', rpl_pokemon: 'Giratina', join: 1 };
+  const fresh = { rpl_id: 'fresh', rpl_rank: '5', rpl_pokemon: 'Giratina', join: 0 };
+  let snapshot = {
+    ...initialSnapshot(), intent: 'search',
+    search: { profile, selection: { ...selection, strategy: 'fast' }, nextQueuePollAt: null, attemptedRaids: {} },
+    operation: { opId: 'scan-stale', kind: 'scanLobbies', input: {}, startedAt: now, attempt: 1 }
+  };
+  snapshot = reduce(snapshot, {
+    type: 'operationSucceeded', opId: 'scan-stale', value: [stale, fresh]
+  }).snapshot;
+  assert.equal(snapshot.operation.kind, 'verifyMembership');
+  assert.equal(snapshot.search.attemptedRaids.stale, now);
+
+  snapshot = reduce(snapshot, {
+    type: 'operationSucceeded',
+    opId: snapshot.operation.opId,
+    value: { membership: 'absent', raid: { ...stale, join: 0 } }
+  }).snapshot;
+  assert.equal(snapshot.wake.kind, 'scan');
+
+  snapshot = { ...snapshot, wake: { ...snapshot.wake, dueAt: now } };
+  snapshot = reduce(snapshot, { type: 'wake', kind: 'scan' }).snapshot;
+  snapshot = reduce(snapshot, {
+    type: 'operationSucceeded', opId: snapshot.operation.opId, value: [stale, fresh]
+  }).snapshot;
+  assert.equal(snapshot.operation.kind, 'joinRaid');
+  assert.equal(snapshot.operation.input.raidId, 'fresh');
 });
 
 test('attempted direct raid candidates expire after thirty seconds', () => {
