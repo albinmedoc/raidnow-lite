@@ -89,8 +89,8 @@ test('browser periodically reconciles status when an SSE update is missed', asyn
 
 test('service worker caches only an explicit shell and bypasses APIs, SSE, mutations, and external images', async () => {
   const source = await asset('service-worker.js');
-  assert.match(source, /raidnow-shell-v22/);
-  assert.doesNotMatch(source, /raidnow-shell-v21/);
+  assert.match(source, /raidnow-shell-v23/);
+  assert.doesNotMatch(source, /raidnow-shell-v22/);
   assert.match(source, /const SHELL_ASSETS = \[/);
   assert.match(source, /request\.method !== 'GET'/);
   assert.match(source, /url\.origin !== self\.location\.origin/);
@@ -168,6 +168,22 @@ test('boss cards are compact, omit Japanese labels, and use a local Dynamax icon
   assert.doesNotMatch(source, /description\.textContent = \(boss\.pokemon/);
   assert.match(css, /grid-template-columns:repeat\(auto-fill,minmax\(150px,1fr\)\)/);
   assert.match(icon, /<svg/);
+});
+
+test('boss cards show shiny eligibility and available hundo CP values', async () => {
+  const [source, css] = await Promise.all([
+    asset('app.js'),
+    asset('styles.css')
+  ]);
+  assert.match(source, /boss\.shinyAvailable/);
+  assert.match(source, /boss\.maxCP20/);
+  assert.match(source, /boss\.maxCP25/);
+  assert.match(source, /shiny-badge/);
+  assert.match(source, /boss-cp/);
+  assert.match(source, /Hundo CP utan väderboost/);
+  assert.match(source, /Hundo CP med väderboost/);
+  assert.match(css, /\.shiny-badge/);
+  assert.match(css, /\.boss-cp/);
 });
 
 test('browser app loads the full catalog and owns selection/reset lifecycle locally', async () => {

@@ -27,6 +27,12 @@ function assertBoolean(value) {
   if (typeof value !== 'boolean') throw protocolError();
 }
 
+function optionalPositiveInteger(value) {
+  if (value === null) return null;
+  if (!Number.isInteger(value) || value <= 0) throw protocolError();
+  return value;
+}
+
 function profileHistoryEntry(entry) {
   return {
     displayTime: entry.displayTime,
@@ -116,13 +122,19 @@ export class CliRaidNowAdapter {
   async listCurrentRaidBosses({ signal } = {}) {
     const data = await this.#run(['bosses', 'list'], { signal });
     assertObjectArray(data);
-    const bosses = data.map((boss) => ({
-      rank: boss.rank,
-      pokemon: boss.pokemonId,
-      displayName: boss.pokemonName,
-      image: boss.imageUrl,
-      waitingCount: boss.waitingCount
-    }));
+    const bosses = data.map((boss) => {
+      assertBoolean(boss.shinyAvailable);
+      return {
+        rank: boss.rank,
+        pokemon: boss.pokemonId,
+        displayName: boss.pokemonName,
+        image: boss.imageUrl,
+        shinyAvailable: boss.shinyAvailable,
+        maxCP20: optionalPositiveInteger(boss.maxCP20),
+        maxCP25: optionalPositiveInteger(boss.maxCP25),
+        waitingCount: boss.waitingCount
+      };
+    });
     this.#currentBosses = bosses;
     this.#currentBossesAt = Date.now();
     return bosses;

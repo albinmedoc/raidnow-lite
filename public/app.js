@@ -1,5 +1,5 @@
 import { clearLocalProfile, loadLocalProfile, saveLocalProfile } from './profile-storage.js';
-import { activeRaidPresentation, applyStatusIfUnchanged, countryFlag, createBrowserResetController, formatLobbyPlayerCount, formatRaidRating, isActiveRaidRequestCurrent, loadActiveRaidDetailsIfCurrent, mutationStatusDecision, queueSelectionFromBosses, searchStatusDisplay, shouldShowEndedRaidNotice, workflowStatusPresentation } from './ui-helpers.js';
+import { activeRaidPresentation, applyStatusIfUnchanged, bossCardAriaLabel, countryFlag, createBrowserResetController, formatLobbyPlayerCount, formatRaidRating, isActiveRaidRequestCurrent, loadActiveRaidDetailsIfCurrent, mutationStatusDecision, queueSelectionFromBosses, rankLabel, searchStatusDisplay, shouldShowEndedRaidNotice, workflowStatusPresentation } from './ui-helpers.js';
 import { createTrainerCodeQrController, isValidTrainerCode } from './trainer-code-qr.js';
 import {
   catalogForWorkerView,
@@ -65,10 +65,6 @@ async function api(path, options = {}) {
 function formatTime(value) {
   if (!value) return 'Ingen kontakt ännu';
   return new Intl.DateTimeFormat('sv-SE', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(value));
-}
-
-function rankLabel(rank) {
-  return ({ '4': 'Mega', '10': 'Dynamax', '11': 'Gigantamax' })[String(rank)] || `Tier ${rank || '?'}`;
 }
 
 function profileReady() {
@@ -187,6 +183,12 @@ function createBossCard(boss, { popular = false } = {}) {
     const tier = document.createElement('span'); tier.className = 'tier'; tier.textContent = rankLabel(boss.rank);
     top.append(tier);
   }
+  if (boss.shinyAvailable) {
+    const shiny = document.createElement('span');
+    shiny.className = 'shiny-badge'; shiny.textContent = '✦'; shiny.title = 'Shiny tillgänglig';
+    shiny.setAttribute('aria-label', 'Shiny tillgänglig');
+    top.append(shiny);
+  }
   card.append(top);
   if (boss.image) {
     const image = document.createElement('img');
@@ -194,14 +196,30 @@ function createBossCard(boss, { popular = false } = {}) {
     card.append(image);
   }
   const title = document.createElement('h3'); title.textContent = boss.displayName || 'Okänd boss';
+  const cp = document.createElement('div'); cp.className = 'boss-cp';
+  if (Number.isInteger(boss.maxCP20) && boss.maxCP20 > 0) {
+    const normal = document.createElement('span'); normal.textContent = `CP ${boss.maxCP20}`;
+    normal.title = `Hundo CP utan väderboost: ${boss.maxCP20}`;
+    normal.setAttribute('aria-label', normal.title);
+    cp.append(normal);
+  }
+  if (Number.isInteger(boss.maxCP25) && boss.maxCP25 > 0) {
+    const boosted = document.createElement('span'); boosted.className = 'weather-boosted-cp'; boosted.textContent = `☀ ${boss.maxCP25}`;
+    boosted.title = `Hundo CP med väderboost: ${boss.maxCP25}`;
+    boosted.setAttribute('aria-label', boosted.title);
+    cp.append(boosted);
+  }
   const meta = document.createElement('div'); meta.className = 'meta queue-count';
   const count = Math.max(0, Number(boss.waitingCount || 0));
+  card.setAttribute('aria-label', bossCardAriaLabel(boss, count));
   meta.setAttribute('aria-label', `${count} ${count === 1 ? 'person' : 'personer'} i kö`);
   const person = document.createElement('span'); person.className = 'queue-person'; person.setAttribute('aria-hidden', 'true');
   const number = document.createElement('span'); number.textContent = String(count);
   meta.append(person, number);
   const mark = document.createElement('span'); mark.className = 'select-mark'; mark.textContent = state.selected.has(key) ? '✓' : '+';
-  card.append(title, meta, mark);
+  card.append(title);
+  if (cp.childElementCount) card.append(cp);
+  card.append(meta, mark);
   const toggle = () => {
     if (isWorkerLocked(state.autoJoin?.state) || state.autoJoin?.state === 'matched') return;
     state.selected.has(key) ? state.selected.delete(key) : state.selected.set(key, boss);

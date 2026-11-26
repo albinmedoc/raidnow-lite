@@ -87,7 +87,8 @@ async function runService(argv) {
       if (!sameArgs(commandArgs, ['bosses', 'list'])) break;
       serviceSuccess(command, 'listed', [{
         rank: '5', pokemonId: '487', pokemonName: 'Giratina',
-        imageUrl: 'https://example.test/giratina.png', waitingCount: 7
+        imageUrl: 'https://example.test/giratina.png',
+        shinyAvailable: true, maxCP20: 2105, maxCP25: 2631, waitingCount: 7
       }]);
       return;
     case 'queue check':

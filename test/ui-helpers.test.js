@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  bossCardAriaLabel,
   countryFlag,
   createBrowserResetController,
   applyStatusIfUnchanged,
@@ -17,6 +18,15 @@ import {
   queueSelectionFromBosses,
   workflowStatusPresentation
 } from '../public/ui-helpers.js';
+
+test('boss card accessibility names retain shiny and CP metadata for Dynamax bosses', () => {
+  assert.equal(bossCardAriaLabel({
+    rank: '10', displayName: 'Charizard', shinyAvailable: true, maxCP20: 1651, maxCP25: 2064
+  }, 12), 'Dynamax, Charizard, Shiny tillgänglig, Hundo CP utan väderboost 1651, Hundo CP med väderboost 2064, 12 personer i kö');
+  assert.equal(bossCardAriaLabel({
+    rank: '5', displayName: 'Ordinary Boss', shinyAvailable: false, maxCP20: null, maxCP25: null
+  }, 1), 'Tier 5, Ordinary Boss, 1 person i kö');
+});
 
 test('builds paired queue arguments when selected bosses share a tier', () => {
   assert.deepEqual(queueSelectionFromBosses([

@@ -100,13 +100,35 @@ test('publishes a profile with the trainer code only on stdin', async () => {
 test('translates the current boss catalog and forwards cancellation', async () => {
   const controller = new AbortController();
   const { adapter, runner } = createAdapter([success('bosses list', [{
-    rank: '5', pokemonId: '150', pokemonName: 'Armored Mewtwo', imageUrl: 'image.png', waitingCount: 4
+    rank: '5', pokemonId: '150', pokemonName: 'Armored Mewtwo', imageUrl: 'image.png',
+    shinyAvailable: true, maxCP20: 1740, maxCP25: 2175, waitingCount: 4
   }], 'listed')]);
 
   assert.deepEqual(await adapter.listCurrentRaidBosses({ signal: controller.signal }), [{
-    rank: '5', pokemon: '150', displayName: 'Armored Mewtwo', image: 'image.png', waitingCount: 4
+    rank: '5', pokemon: '150', displayName: 'Armored Mewtwo', image: 'image.png',
+    shinyAvailable: true, maxCP20: 1740, maxCP25: 2175, waitingCount: 4
   }]);
   assertCall(runner.calls[0], ['bosses', 'list'], { signal: controller.signal });
+});
+
+test('rejects malformed shiny and CP boss metadata from the CLI', async () => {
+  const valid = {
+    rank: '5', pokemonId: '150', pokemonName: 'Mewtwo', imageUrl: '',
+    shinyAvailable: true, maxCP20: 2387, maxCP25: 2984, waitingCount: 1
+  };
+  const cases = [
+    ['shinyAvailable', undefined], ['shinyAvailable', 1], ['shinyAvailable', 'true'], ['shinyAvailable', null],
+    ['maxCP20', undefined], ['maxCP20', 0], ['maxCP20', -1], ['maxCP20', 2387.5], ['maxCP20', '2387'],
+    ['maxCP25', undefined], ['maxCP25', 0], ['maxCP25', -1], ['maxCP25', 2984.5], ['maxCP25', '2984']
+  ];
+  for (const [field, value] of cases) {
+    const { adapter } = createAdapter([success('bosses list', [{ ...valid, [field]: value }], 'listed')]);
+    await assert.rejects(
+      () => adapter.listCurrentRaidBosses(),
+      (error) => error.code === 'CLI_PROTOCOL_ERROR'
+        && error.message === 'The CLI returned an invalid response.'
+    );
+  }
 });
 
 test('reads joined and kicked profile history through the CLI contract', async () => {
@@ -298,9 +320,9 @@ test('refreshes and caches the boss catalog for lobby exclusion filters', async 
   Date.now = () => now;
   try {
     const catalog = [
-      { rank: '5', pokemonId: '150', pokemonName: 'Mewtwo', imageUrl: '', waitingCount: 1 },
-      { rank: '5', pokemonId: '25', pokemonName: 'Pikachu', imageUrl: '', waitingCount: 2 },
-      { rank: 'mega', pokemonId: '6_x', pokemonName: 'Charizard', imageUrl: '', waitingCount: 3 }
+      { rank: '5', pokemonId: '150', pokemonName: 'Mewtwo', imageUrl: '', shinyAvailable: true, maxCP20: 2387, maxCP25: 2984, waitingCount: 1 },
+      { rank: '5', pokemonId: '25', pokemonName: 'Pikachu', imageUrl: '', shinyAvailable: true, maxCP20: 536, maxCP25: 670, waitingCount: 2 },
+      { rank: 'mega', pokemonId: '6_x', pokemonName: 'Charizard', imageUrl: '', shinyAvailable: true, maxCP20: null, maxCP25: null, waitingCount: 3 }
     ];
     const { adapter, runner } = createAdapter([
       success('bosses list', catalog, 'listed'),

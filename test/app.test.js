@@ -224,8 +224,14 @@ test('returns the complete Auto Join boss list instead of homepage raid posts', 
     async listRaids() { homepageListCalled = true; return []; },
     async listCurrentRaidBosses() {
       return [
-        { rank: '5', pokemon: 'ザシアン(けんのおう)', displayName: 'Zacian (Crowned Sword)', image: 'https://example.test/zacian.png' },
-        { rank: '3', pokemon: 'ピカチュウ', displayName: 'Pikachu', image: 'https://example.test/pikachu.png' }
+        {
+          rank: '5', pokemon: 'ザシアン(けんのおう)', displayName: 'Zacian (Crowned Sword)',
+          image: 'https://example.test/zacian.png', shinyAvailable: true, maxCP20: 2188, maxCP25: 2735
+        },
+        {
+          rank: '3', pokemon: 'ピカチュウ', displayName: 'Pikachu',
+          image: 'https://example.test/pikachu.png', shinyAvailable: false, maxCP20: null, maxCP25: null
+        }
       ];
     }
   });
@@ -235,6 +241,12 @@ test('returns the complete Auto Join boss list instead of homepage raid posts', 
     const body = await response.json();
     assert.equal(body.bosses.length, 2);
     assert.equal(body.bosses[0].displayName, 'Zacian (Crowned Sword)');
+    assert.equal(body.bosses[0].shinyAvailable, true);
+    assert.equal(body.bosses[0].maxCP20, 2188);
+    assert.equal(body.bosses[0].maxCP25, 2735);
+    assert.equal(body.bosses[1].shinyAvailable, false);
+    assert.equal(body.bosses[1].maxCP20, null);
+    assert.equal(body.bosses[1].maxCP25, null);
     assert.equal('activeRaids' in body.bosses[0], false);
     assert.equal(homepageListCalled, false);
   } finally { await close(app); }

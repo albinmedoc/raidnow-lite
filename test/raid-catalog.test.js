@@ -25,14 +25,23 @@ test('groups duplicate live raids into one selectable Pokemon boss', () => {
 
 test('builds selectable bosses from the current schedule with Auto Join waiting counts', () => {
   const bosses = buildRaidBossCatalog([
-    { rank: '5', pokemon: 'ザシアン(けんのおう)', displayName: 'Zacian (Crowned Sword)', image: 'https://example.test/zacian.png', waitingCount: 28 },
-    { rank: '5', pokemon: 'ザマゼンタ(たてのおう)', displayName: 'Zamazenta (Crowned Shield)', image: 'https://example.test/zamazenta.png' },
+    {
+      rank: '5', pokemon: 'ザシアン(けんのおう)', displayName: 'Zacian (Crowned Sword)',
+      image: 'https://example.test/zacian.png', shinyAvailable: true, maxCP20: 2188, maxCP25: 2735, waitingCount: 28
+    },
+    {
+      rank: '5', pokemon: 'ザマゼンタ(たてのおう)', displayName: 'Zamazenta (Crowned Shield)',
+      image: 'https://example.test/zamazenta.png', shinyAvailable: false, maxCP20: null, maxCP25: null
+    },
     { rank: '3', pokemon: 'ピカチュウ', displayName: 'Pikachu', image: 'https://example.test/pikachu.png' }
   ]);
   assert.equal(bosses.length, 3);
   assert.equal(bosses[0].displayName, 'Zacian (Crowned Sword)');
   assert.equal(bosses[0].image, 'https://example.test/zacian.png');
   assert.equal(bosses[0].waitingCount, 28);
+  assert.equal(bosses[0].shinyAvailable, true);
+  assert.equal(bosses[0].maxCP20, 2188);
+  assert.equal(bosses[0].maxCP25, 2735);
   assert.deepEqual(bosses[0].pokemon, ['ザシアン(けんのおう)']);
   assert.equal('activeRaids' in bosses[0], false);
 });

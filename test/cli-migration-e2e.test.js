@@ -202,6 +202,9 @@ test('runs the live migration path through a real CLI subprocess', { timeout: 10
     assert.equal(raids.bosses.length, 1);
     assert.equal(raids.bosses[0].displayName, 'Giratina');
     assert.equal(raids.bosses[0].image, 'https://example.test/giratina.png');
+    assert.equal(raids.bosses[0].shinyAvailable, true);
+    assert.equal(raids.bosses[0].maxCP20, 2105);
+    assert.equal(raids.bosses[0].maxCP25, 2631);
     assert.equal(raids.bosses[0].waitingCount, 7);
 
     const started = await request(fixture.baseUrl, cookie, '/api/autojoin/start', {

@@ -2,6 +2,10 @@ function readableName(name) {
   return String(name || '').replace(/\s*\(/g, ' (');
 }
 
+function optionalCP(value) {
+  return Number.isInteger(value) && value > 0 ? value : null;
+}
+
 export function enrichRaids(raids = []) {
   return raids.map((raid) => {
     return {
@@ -47,6 +51,9 @@ export function buildRaidBossCatalog(currentBosses = []) {
       pokemon: [pokemon],
       displayName: readableName(current.displayName || pokemon),
       image: current.image || '',
+      shinyAvailable: current.shinyAvailable === true,
+      maxCP20: optionalCP(current.maxCP20),
+      maxCP25: optionalCP(current.maxCP25),
       waitingCount: Math.max(0, Number.parseInt(current.waitingCount, 10) || 0)
     });
   }

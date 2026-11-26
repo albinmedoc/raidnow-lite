@@ -59,6 +59,20 @@ export function formatLobbyPlayerCount(count, maximum) {
   return Number.isInteger(max) && max > 0 ? `${currentText}/${max}` : currentText;
 }
 
+export function rankLabel(rank) {
+  return ({ '4': 'Mega', '10': 'Dynamax', '11': 'Gigantamax' })[String(rank)] || `Tier ${rank || '?'}`;
+}
+
+export function bossCardAriaLabel(boss, waitingCount) {
+  const count = Math.max(0, Number(waitingCount || 0));
+  const parts = [rankLabel(boss?.rank), boss?.displayName || 'Okänd boss'];
+  if (boss?.shinyAvailable === true) parts.push('Shiny tillgänglig');
+  if (Number.isInteger(boss?.maxCP20) && boss.maxCP20 > 0) parts.push(`Hundo CP utan väderboost ${boss.maxCP20}`);
+  if (Number.isInteger(boss?.maxCP25) && boss.maxCP25 > 0) parts.push(`Hundo CP med väderboost ${boss.maxCP25}`);
+  parts.push(`${count} ${count === 1 ? 'person' : 'personer'} i kö`);
+  return parts.join(', ');
+}
+
 export function formatRaidRating(value) {
   const available = Number.isInteger(value) && value >= 0 && value <= 5;
   return available
