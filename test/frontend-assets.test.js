@@ -131,12 +131,15 @@ test('hosted lobby UI exposes semantic creation, guest controls and recovery wit
   assert.match(css, /\.host-player-row\{[^}]*min-width:0/);
   assert.match(css, /\.host-pokemon-grid\{/);
   assert.match(css, /\.host-weather-grid\{/);
+  assert.match(css, /\.host-lobby-dialog-card\{[^}]*width:auto;[^}]*min-width:0/);
+  assert.doesNotMatch(css, /\.host-lobby-dialog-card\{[^}]*width:(?:720px|min\(|calc\()/);
+  assert.doesNotMatch(css, /\.host-lobby-dialog-card\{[^}]*(?:max-width:none|overflow-x:hidden)/);
 });
 
 test('service worker caches only an explicit shell and bypasses APIs, SSE, mutations, and external images', async () => {
   const source = await asset('service-worker.js');
-  assert.match(source, /raidnow-shell-v25/);
-  assert.doesNotMatch(source, /raidnow-shell-v24/);
+  assert.match(source, /raidnow-shell-v26/);
+  assert.doesNotMatch(source, /raidnow-shell-v25/);
   assert.match(source, /const SHELL_ASSETS = \[/);
   assert.match(source, /request\.method !== 'GET'/);
   assert.match(source, /url\.origin !== self\.location\.origin/);
