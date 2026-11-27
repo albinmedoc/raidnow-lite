@@ -90,8 +90,8 @@ test('browser periodically reconciles status when an SSE update is missed', asyn
 test('hosted lobby UI exposes semantic creation, guest controls and recovery without browser raid ids', async () => {
   const [html, source, css] = await Promise.all([asset('index.html'), asset('app.js'), asset('styles.css')]);
   for (const id of [
-    'hostLobbyPanel', 'openHostLobby', 'hostLobbyDialog', 'hostLobbyForm', 'hostPokemon',
-    'hostCurrentWeather', 'hostGymColor', 'hostPassType', 'hostMaxUsers', 'hostGuestLevel',
+    'hostLobbyPanel', 'openHostLobby', 'hostLobbyDialog', 'hostLobbyForm', 'hostPokemon', 'hostPokemonGrid',
+    'hostCurrentWeather', 'hostWeatherGrid', 'hostRaidTimeRemaining', 'hostGymColor', 'hostPassType', 'hostMaxUsers', 'hostGuestLevel',
     'hostGuestRating', 'hostWeatherBoosted', 'hostLobbyPlayers', 'startHostedRaid',
     'closeHostedLobby', 'abandonHostedLobby'
   ]) assert.match(html, new RegExp(`id="${id}"`));
@@ -99,6 +99,19 @@ test('hosted lobby UI exposes semantic creation, guest controls and recovery wit
     assert.match(html, new RegExp(`value="${value}"`));
   }
   assert.doesNotMatch(html, /name="raidId"|id="hostRaidId"/);
+  assert.doesNotMatch(html, /id="hostStartDate"|type="datetime-local"/);
+  assert.match(html, /data-host-time="under-five"/);
+  assert.match(html, /data-host-time="at-least-five"/);
+  assert.match(html, /class="host-weather-option[^"]*"[^>]*data-weather="cloudy"/);
+  assert.match(html, /class="host-weather-option[^"]*"[^>]*data-weather="rain"/);
+  assert.match(source, /image\.src = boss\.image/);
+  assert.match(source, /timeRemaining:\s*\$\('#hostRaidTimeRemaining'\)\.value/);
+  assert.doesNotMatch(source, /hostedWireDate|defaultHostedStartDate/);
+  assert.match(source, /ArrowLeft.*ArrowRight.*ArrowUp.*ArrowDown/);
+  assert.match(source, /option\.tabIndex = active \? 0 : -1/);
+  assert.match(source, /weatherImage\.addEventListener\('error'/);
+  assert.match(html, /data-host-time="at-least-five"[^>]*tabindex="0"/);
+  assert.match(html, /data-host-time="under-five"[^>]*tabindex="-1"/);
   for (const endpoint of [
     '/api/hosted-lobby', '/api/hosted-lobby/start', '/api/hosted-lobby/kick',
     '/api/hosted-lobby/close', '/api/hosted-lobby/abandon'
@@ -116,12 +129,14 @@ test('hosted lobby UI exposes semantic creation, guest controls and recovery wit
   assert.match(css, /\.host-lobby-dialog-card\{[^}]*overflow-y:auto/);
   assert.match(css, /\.host-player-name\{[^}]*overflow-wrap:anywhere/);
   assert.match(css, /\.host-player-row\{[^}]*min-width:0/);
+  assert.match(css, /\.host-pokemon-grid\{/);
+  assert.match(css, /\.host-weather-grid\{/);
 });
 
 test('service worker caches only an explicit shell and bypasses APIs, SSE, mutations, and external images', async () => {
   const source = await asset('service-worker.js');
-  assert.match(source, /raidnow-shell-v24/);
-  assert.doesNotMatch(source, /raidnow-shell-v23/);
+  assert.match(source, /raidnow-shell-v25/);
+  assert.doesNotMatch(source, /raidnow-shell-v24/);
   assert.match(source, /const SHELL_ASSETS = \[/);
   assert.match(source, /request\.method !== 'GET'/);
   assert.match(source, /url\.origin !== self\.location\.origin/);

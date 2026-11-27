@@ -96,12 +96,31 @@ async function readJson(request, maxBodyBytes) {
   }
 }
 
-function normalizeHostedLobbyInput(input, bosses) {
+const HOST_RAID_SPAN_SECONDS = 45 * 60;
+const HOST_TIME_REMAINING_SECONDS = new Map([
+  ['under-five', 4 * 60 + 59],
+  // Raid NOW's own host UI encodes the upper bucket as exactly 05:00; mirror that wire behavior.
+  ['at-least-five', 5 * 60]
+]);
+
+function hostedStartDate(timeRemaining, nowMs) {
+  const remainingSeconds = HOST_TIME_REMAINING_SECONDS.get(timeRemaining);
+  if (remainingSeconds === undefined) return '';
+  const startedAt = new Date(nowMs - (HOST_RAID_SPAN_SECONDS - remainingSeconds) * 1000);
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'
+  }).formatToParts(startedAt).map(({ type, value }) => [type, value]));
+  return `${parts.year}/${parts.month}/${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+}
+
+function normalizeHostedLobbyInput(input, bosses, nowMs) {
   const profile = normalizeProfile(input.profile ?? {});
   const profileErrors = validateProfile(profile);
   if (Object.keys(profileErrors).length) throw new HttpError(400, 'Complete your profile first.');
+  const timeRemaining = String(input.timeRemaining ?? '');
   const value = {
-    startDate: String(input.startDate ?? ''),
+    startDate: hostedStartDate(timeRemaining, nowMs),
     pokemonId: String(input.pokemonId ?? ''),
     currentWeather: String(input.currentWeather ?? ''),
     gymColor: String(input.gymColor ?? ''),
@@ -120,7 +139,8 @@ function normalizeHostedLobbyInput(input, bosses) {
   const passTypes = new Set(['remote', 'local']);
   const ratings = new Set(['all', '0', '1', '2', '3', '4', '5']);
   const booleans = ['weatherBoosted', 'private', 'invitationOnly', 'hot', 'megaPokemonEntry'];
-  const valid = isValidHostedStartDate(value.startDate)
+  const valid = HOST_TIME_REMAINING_SECONDS.has(timeRemaining)
+    && isValidHostedStartDate(value.startDate)
     && value.pokemonId.length > 0 && value.pokemonId.length <= 256
     && bosses.some((boss) => boss?.pokemon === value.pokemonId)
     && weather.has(value.currentWeather) && colors.has(value.gymColor) && passTypes.has(value.passType)
@@ -361,7 +381,7 @@ export function createApp({ adapter, store, sessionManager = null, pushNotifier 
           if (!['idle', 'stopped', 'error'].includes(worker.status().state)) return sendJson(response, 409, { message: 'Stop Auto Join before hosting a lobby.' });
           if (!activeAdapter.listCurrentRaidBosses) return sendJson(response, 501, { message: 'Hosted lobbies are unavailable in this mode.' });
           const body = await readJson(request, maxBodyBytes);
-          const normalized = normalizeHostedLobbyInput(body, await activeAdapter.listCurrentRaidBosses());
+          const normalized = normalizeHostedLobbyInput(body, await activeAdapter.listCurrentRaidBosses(), now());
           if (!['idle', 'stopped', 'error'].includes(worker.status().state)) return sendJson(response, 409, { message: 'Stop Auto Join before hosting a lobby.' });
           const status = await hostedLobby.create(normalized);
           return sendJson(response, status.state === 'active' ? 201 : 202, status);

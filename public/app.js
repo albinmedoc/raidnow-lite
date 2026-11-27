@@ -264,27 +264,57 @@ function renderRaids() {
 }
 
 function renderHostedPokemonOptions() {
-  const select = $('#hostPokemon');
-  const current = select.value;
-  select.replaceChildren();
+  const input = $('#hostPokemon');
+  const grid = $('#hostPokemonGrid');
+  const current = input.value;
+  grid.replaceChildren();
   for (const boss of state.catalog) {
-    const option = document.createElement('option');
-    option.value = boss.pokemon;
-    option.textContent = `${boss.displayName} · ${rankLabel(boss.rank)}`;
-    select.append(option);
+    const option = document.createElement('button');
+    option.type = 'button'; option.className = 'host-pokemon-option'; option.dataset.pokemon = boss.pokemon;
+    option.setAttribute('role', 'radio'); option.setAttribute('aria-checked', 'false');
+    const image = document.createElement('img'); image.alt = ''; image.loading = 'lazy';
+    if (boss.image) image.src = boss.image; else image.src = '/icons/icon-192.png';
+    image.addEventListener('error', () => { image.src = '/icons/icon-192.png'; }, { once: true });
+    const label = document.createElement('span');
+    const name = document.createElement('strong'); name.textContent = boss.displayName;
+    const rank = document.createElement('small'); rank.textContent = rankLabel(boss.rank);
+    label.append(name, rank); option.append(image, label);
+    grid.append(option);
   }
-  if ([...select.options].some((option) => option.value === current)) select.value = current;
+  const selected = [...grid.children].find((option) => option.dataset.pokemon === current) || grid.firstElementChild;
+  if (selected) selectHostedChoice(grid, input, selected, 'pokemon');
 }
 
-function defaultHostedStartDate() {
-  const date = new Date(Date.now() + 5 * 60_000);
-  const part = (value) => String(value).padStart(2, '0');
-  return `${date.getFullYear()}-${part(date.getMonth() + 1)}-${part(date.getDate())}T${part(date.getHours())}:${part(date.getMinutes())}`;
+function selectHostedChoice(container, input, selected, dataName) {
+  for (const option of container.querySelectorAll('[role="radio"]')) {
+    const active = option === selected;
+    option.classList.toggle('selected', active);
+    option.setAttribute('aria-checked', String(active));
+    option.tabIndex = active ? 0 : -1;
+  }
+  input.value = selected.dataset[dataName] || selected.value;
 }
 
-function hostedWireDate(value) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value);
-  return match ? `${match[1]}/${match[2]}/${match[3]} ${match[4]}:${match[5]}:00` : '';
+function bindHostedChoiceGroup(container, input, dataName) {
+  container.addEventListener('click', (event) => {
+    const option = event.target.closest('[role="radio"]');
+    if (option && container.contains(option)) selectHostedChoice(container, input, option, dataName);
+  });
+  container.addEventListener('keydown', (event) => {
+    const navigationKeys = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'];
+    if (![...navigationKeys, 'Home', 'End'].includes(event.key)) return;
+    const options = [...container.querySelectorAll('[role="radio"]')];
+    if (!options.length) return;
+    const current = event.target.closest('[role="radio"]') || options.find((option) => option.tabIndex === 0) || options[0];
+    let index = options.indexOf(current);
+    if (event.key === 'Home') index = 0;
+    else if (event.key === 'End') index = options.length - 1;
+    else if (['ArrowRight', 'ArrowDown'].includes(event.key)) index = (index + 1) % options.length;
+    else index = (index - 1 + options.length) % options.length;
+    event.preventDefault();
+    selectHostedChoice(container, input, options[index], dataName);
+    options[index].focus();
+  });
 }
 
 function renderHostedLobby(status) {
@@ -712,10 +742,16 @@ $('#openHostLobby').addEventListener('click', () => {
     return;
   }
   renderHostedPokemonOptions();
-  if (!$('#hostStartDate').value) $('#hostStartDate').value = defaultHostedStartDate();
   $('#hostLobbyFormMessage').textContent = '';
   $('#hostLobbyDialog').showModal();
 });
+
+bindHostedChoiceGroup($('#hostPokemonGrid'), $('#hostPokemon'), 'pokemon');
+bindHostedChoiceGroup($('#hostWeatherGrid'), $('#hostCurrentWeather'), 'weather');
+bindHostedChoiceGroup(document.querySelector('[data-host-time]').parentElement, $('#hostRaidTimeRemaining'), 'hostTime');
+for (const weatherImage of $('#hostWeatherGrid').querySelectorAll('img')) {
+  weatherImage.addEventListener('error', () => { weatherImage.src = '/icons/icon-192.png'; }, { once: true });
+}
 
 $('#hostPassType').addEventListener('change', () => {
   const remote = $('#hostPassType').value === 'remote';
@@ -732,7 +768,7 @@ $('#hostLobbyForm').addEventListener('submit', async (event) => {
   message.className = 'form-message'; message.textContent = 'Skapar…'; submit.disabled = true;
   const payload = {
     profile: state.profile,
-    startDate: hostedWireDate($('#hostStartDate').value),
+    timeRemaining: $('#hostRaidTimeRemaining').value,
     pokemonId: $('#hostPokemon').value,
     currentWeather: $('#hostCurrentWeather').value,
     gymColor: $('#hostGymColor').value,
