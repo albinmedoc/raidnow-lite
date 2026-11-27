@@ -260,6 +260,55 @@ test('runs the live migration path through a real CLI subprocess', { timeout: 10
   }
 });
 
+test('runs hosted lobby management through the real CLI subprocess contract', { timeout: 10_000 }, async () => {
+  const fixture = await createFixture();
+  try {
+    const config = await fetch(`${fixture.baseUrl}/api/config`);
+    const cookie = issuedCookie(config);
+    await request(fixture.baseUrl, cookie, '/api/raids');
+    const created = await request(fixture.baseUrl, cookie, '/api/hosted-lobby', {
+      method: 'POST',
+      body: JSON.stringify({
+        profile,
+        startDate: '2026/11/27 16:23:35',
+        pokemonId: '487',
+        currentWeather: 'cloudy',
+        gymColor: 'mystic',
+        passType: 'remote',
+        maxUsers: 5,
+        weatherBoosted: false,
+        guestLevel: 5,
+        guestRating: 'all',
+        private: false,
+        invitationOnly: false,
+        hot: true,
+        megaPokemonEntry: false
+      })
+    });
+    assert.equal(created.status, 201);
+    assert.equal((await created.json()).raidId, 'host-process-1');
+
+    const status = await request(fixture.baseUrl, cookie, '/api/hosted-lobby').then((response) => response.json());
+    assert.equal(status.players[0].trainerName, 'HostedGuest');
+    assert.equal(status.players[0].canKick, true);
+    assert.equal(status.count, 1);
+    const protectedReset = await request(fixture.baseUrl, cookie, '/api/session/reset', { method: 'POST' });
+    assert.equal(protectedReset.status, 409);
+
+    const kicked = await request(fixture.baseUrl, cookie, '/api/hosted-lobby/kick', {
+      method: 'POST', body: JSON.stringify({ guestId: 'guest-process-1', raidId: 'browser-must-not-control-this' })
+    });
+    assert.equal(kicked.status, 200);
+    const started = await request(fixture.baseUrl, cookie, '/api/hosted-lobby/start', { method: 'POST' });
+    assert.equal(started.status, 200);
+    const closed = await request(fixture.baseUrl, cookie, '/api/hosted-lobby/close', { method: 'POST' });
+    assert.equal(closed.status, 200);
+    assert.equal((await closed.json()).state, 'none');
+  } finally {
+    await closeFixture(fixture);
+  }
+});
+
 test('isolates owner-only CLI token files for two browser cookies', { timeout: 10_000 }, async () => {
   const fixture = await createFixture();
   try {

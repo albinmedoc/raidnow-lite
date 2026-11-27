@@ -79,6 +79,23 @@
       </div>
     </section>
 
+    <section id="hostLobbyPanel" class="host-lobby-panel" aria-live="polite">
+      <div class="host-lobby-heading">
+        <div><p class="eyebrow">HOSTA RAID</p><h2 id="hostLobbyTitle">Egen Raid NOW-lobby</h2><p id="hostLobbyStatus" class="muted">Skapa en lobby och hantera gäster här.</p></div>
+        <div class="actions">
+          <button id="openHostLobby" class="secondary" type="button">Skapa lobby</button>
+          <button id="startHostedRaid" class="primary hidden" type="button">Raiden börjar</button>
+          <button id="closeHostedLobby" class="danger hidden" type="button">Stäng lobby</button>
+          <button id="abandonHostedLobby" class="secondary hidden" type="button">Glöm lokalt</button>
+        </div>
+      </div>
+      <div id="hostLobbyDetails" class="host-lobby-details hidden">
+        <div class="host-lobby-stats"><span>Gäster <strong id="hostLobbyCount">0</strong></span><span>Redo <strong id="hostLobbyReadyCount">0</strong></span></div>
+        <div id="hostLobbyPlayers" class="host-player-list"><p class="muted">Inga gäster ännu.</p></div>
+      </div>
+      <p id="hostLobbyMessage" class="form-message"></p>
+    </section>
+
     <section id="raids" class="raid-search-view">
       <section class="popular-section" aria-labelledby="popularHeading">
         <div class="popular-heading">
@@ -116,6 +133,31 @@
       <img id="trainerCodeQrImage" class="trainer-code-qr" alt="" hidden>
       <code id="trainerCodeQrFallback" class="trainer-code qr-fallback" tabindex="0">—</code>
       <button id="copyQrCode" class="primary" type="button">Kopiera trainer code</button>
+    </div>
+  </dialog>
+
+  <dialog id="hostLobbyDialog" class="modal host-lobby-dialog" aria-labelledby="hostLobbyDialogTitle">
+    <div class="host-lobby-dialog-card">
+      <form method="dialog" class="modal-header"><div><p class="eyebrow">HOSTA RAID</p><h2 id="hostLobbyDialogTitle">Skapa lobby</h2></div><button class="modal-close secondary" value="cancel" aria-label="Stäng">Stäng</button></form>
+      <p class="muted">Raidrank och väderboostar hämtas automatiskt från Raid NOW:s aktuella metadata.</p>
+      <form id="hostLobbyForm" class="form-grid">
+        <label class="wide">Pokémon<select id="hostPokemon" name="pokemonId" required></select></label>
+        <label>Starttid<input id="hostStartDate" name="startDate" type="datetime-local" required></label>
+        <label>Väder<select id="hostCurrentWeather" name="currentWeather"><option value="unknown">Okänt</option><option value="sunny">Soligt</option><option value="clear-night">Klart, natt</option><option value="partly-cloudy">Halvklart</option><option value="partly-cloudy-night">Halvklart, natt</option><option value="cloudy">Molnigt</option><option value="rain">Regn</option><option value="snow">Snö</option><option value="windy">Blåsigt</option><option value="fog">Dimma</option></select></label>
+        <label>Gymfärg<select id="hostGymColor" name="gymColor"><option value="neutral">Neutral</option><option value="valor">Valor</option><option value="mystic">Mystic</option><option value="instinct">Instinct</option></select></label>
+        <label>Passtyp<select id="hostPassType" name="passType"><option value="remote">Remote</option><option value="local">På plats</option></select></label>
+        <label>Max spelare<select id="hostMaxUsers" name="maxUsers"><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10" disabled>10</option></select></label>
+        <label>Minsta gästnivå<select id="hostGuestLevel" name="guestLevel"><option value="5">TL 5+</option><option value="40">TL 40+</option><option value="50">TL 50+</option><option value="60">TL 60+</option><option value="70">TL 70+</option></select></label>
+        <label>Minsta gästbetyg<select id="hostGuestRating" name="guestRating"><option value="all">Alla</option><option value="0">0★+</option><option value="1">1★+</option><option value="2">2★+</option><option value="3">3★+</option><option value="4">4★+</option><option value="5">5★</option></select></label>
+        <div class="wide host-checkboxes">
+          <label><input id="hostWeatherBoosted" name="weatherBoosted" type="checkbox"> Raiden är väderboostad</label>
+          <label><input id="hostPrivate" name="private" type="checkbox"> Privat lobby</label>
+          <label><input id="hostInvitationOnly" name="invitationOnly" type="checkbox"> Endast inbjudna</label>
+          <label><input id="hostHot" name="hot" type="checkbox" checked> Prioriterad lobby</label>
+          <label><input id="hostMegaPokemonEntry" name="megaPokemonEntry" type="checkbox"> Mega-Pokémon aktiv</label>
+        </div>
+        <div class="wide modal-actions"><button class="primary" type="submit">Skapa lobby</button><span id="hostLobbyFormMessage" class="form-message"></span></div>
+      </form>
     </div>
   </dialog>
 

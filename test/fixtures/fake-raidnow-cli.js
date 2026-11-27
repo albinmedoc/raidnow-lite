@@ -124,6 +124,36 @@ async function runService(argv) {
       if (!sameArgs(commandArgs, ['queue', 'cancel', '--verify=false'])) break;
       serviceSuccess(command, 'requested', { requested: true, verified: false });
       return;
+    case 'host create':
+      if (!sameArgs(commandArgs, [
+        'host', 'create', '--start-date', '2026/11/27 16:23:35', '--pokemon', '487',
+        '--trainer-name', 'ProcessUser', '--trainer-level', '50', '--trainer-country', 'se',
+        '--trainer-code-file', '-', '--current-weather', 'cloudy', '--max-users', '5',
+        '--gym-color', 'mystic', '--pass-type', 'remote', '--guest-level', '5',
+        '--guest-rating', 'all', '--hot'
+      ])) break;
+      if (await readStdin(64) !== '123456789012') break;
+      serviceSuccess(command, 'created', { created: true, raidId: 'host-process-1' });
+      return;
+    case 'host status':
+      if (!sameArgs(commandArgs, ['host', 'status', '--raid-id', 'host-process-1'])) break;
+      serviceSuccess(command, 'listed', {
+        players: [{ id: 'guest-process-1', trainerName: 'HostedGuest', level: 44, country: 'jp', rating: 0, ready: false, isMe: false }],
+        count: 1, readyCount: 0, raidDeleted: false
+      });
+      return;
+    case 'host kick':
+      if (!sameArgs(commandArgs, ['host', 'kick', '--raid-id', 'host-process-1', '--guest-id', 'guest-process-1'])) break;
+      serviceSuccess(command, 'kicked', { raidId: 'host-process-1', guestId: 'guest-process-1' });
+      return;
+    case 'host start':
+      if (!sameArgs(commandArgs, ['host', 'start', '--raid-id', 'host-process-1'])) break;
+      serviceSuccess(command, 'started', { raidId: 'host-process-1' });
+      return;
+    case 'host close':
+      if (!sameArgs(commandArgs, ['host', 'close', '--raid-id', 'host-process-1'])) break;
+      serviceSuccess(command, 'closed', { raidId: 'host-process-1' });
+      return;
     case 'raid players':
       if (!sameArgs(commandArgs, ['raid', 'players', '--raid-id', 'raid-process-1'])) break;
       serviceSuccess(command, 'listed', {

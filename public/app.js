@@ -1,5 +1,5 @@
 import { clearLocalProfile, loadLocalProfile, saveLocalProfile } from './profile-storage.js';
-import { activeRaidPresentation, applyStatusIfUnchanged, bossCardAriaLabel, countryFlag, createBrowserResetController, formatLobbyPlayerCount, formatRaidRating, isActiveRaidRequestCurrent, loadActiveRaidDetailsIfCurrent, mutationStatusDecision, queueSelectionFromBosses, rankLabel, searchStatusDisplay, shouldShowEndedRaidNotice, workflowStatusPresentation } from './ui-helpers.js';
+import { activeRaidPresentation, applyStatusIfUnchanged, bossCardAriaLabel, countryFlag, createBrowserResetController, createStatusOrdering, formatLobbyPlayerCount, formatRaidRating, isActiveRaidRequestCurrent, loadActiveRaidDetailsIfCurrent, mutationStatusDecision, queueSelectionFromBosses, rankLabel, searchStatusDisplay, shouldShowEndedRaidNotice, workflowStatusPresentation } from './ui-helpers.js';
 import { createTrainerCodeQrController, isValidTrainerCode } from './trainer-code-qr.js';
 import {
   catalogForWorkerView,
@@ -19,6 +19,9 @@ const state = {
   selected: new Map(),
   localSelection: null,
   autoJoin: null,
+  hostedLobby: null,
+  hostedLobbyTimer: null,
+  hostedLobbyRefreshInFlight: false,
   activeRaidId: null,
   activeRaidTimer: null,
   activeRaidRequestGeneration: 0,
@@ -27,11 +30,13 @@ const state = {
   statusRefreshInFlight: false,
   statusRevision: 0,
   pendingStart: false,
+  pendingHost: false,
   fetchedAt: null,
   staleWarningCount: 0
 };
 const $ = (selector) => document.querySelector(selector);
 const trainerCodeQr = createTrainerCodeQrController();
+const hostedLobbyOrdering = createStatusOrdering();
 let qrReturnFocus = null;
 let installPrompt = null;
 
@@ -97,7 +102,8 @@ function updateProfileLabel() {
 
 function updateControls() {
   const workerState = state.autoJoin?.state;
-  const locked = isWorkerLocked(workerState) || workerState === 'matched';
+  const hostLocked = Boolean(state.hostedLobby && state.hostedLobby.state !== 'none');
+  const locked = isWorkerLocked(workerState) || workerState === 'matched' || hostLocked;
   const liveReadOnly = state.config?.mode === 'live' && !state.config.liveWrites;
   const controls = ['#rankFilter', '#bossSearch', '#hostRating', '#hostCountry', '#hostLevel', '#weatherBoost', '#refreshRaids', '#filterButton'];
   for (const selector of controls) {
@@ -108,6 +114,8 @@ function updateControls() {
   $('#quickStartSearch').disabled = state.selected.size === 0 || locked || liveReadOnly || !['idle', 'stopped', 'error', undefined, null].includes(workerState);
   $('#quickStartSearch').setAttribute('aria-disabled', String($('#quickStartSearch').disabled));
   $('#stopSearch').disabled = !['starting', 'searching', 'retrying', 'joining'].includes(workerState);
+  $('#openHostLobby').disabled = !state.hostedLobby?.canCreate || isWorkerLocked(workerState) || workerState === 'matched' || liveReadOnly;
+  $('#openHostLobby').setAttribute('aria-disabled', String($('#openHostLobby').disabled));
   $('#raidGrid').classList.toggle('controls-locked', locked);
 }
 
@@ -165,7 +173,7 @@ function visibleBosses() {
 }
 
 function createBossCard(boss, { popular = false } = {}) {
-  const locked = isWorkerLocked(state.autoJoin?.state) || state.autoJoin?.state === 'matched';
+  const locked = isWorkerLocked(state.autoJoin?.state) || state.autoJoin?.state === 'matched' || Boolean(state.hostedLobby && state.hostedLobby.state !== 'none');
   const key = boss.id;
   const card = document.createElement('article');
   card.className = `raid-card boss-card${popular ? ' popular-card' : ''}${state.selected.has(key) ? ' selected' : ''}`;
@@ -255,12 +263,114 @@ function renderRaids() {
   );
 }
 
+function renderHostedPokemonOptions() {
+  const select = $('#hostPokemon');
+  const current = select.value;
+  select.replaceChildren();
+  for (const boss of state.catalog) {
+    const option = document.createElement('option');
+    option.value = boss.pokemon;
+    option.textContent = `${boss.displayName} · ${rankLabel(boss.rank)}`;
+    select.append(option);
+  }
+  if ([...select.options].some((option) => option.value === current)) select.value = current;
+}
+
+function defaultHostedStartDate() {
+  const date = new Date(Date.now() + 5 * 60_000);
+  const part = (value) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${part(date.getMonth() + 1)}-${part(date.getDate())}T${part(date.getHours())}:${part(date.getMinutes())}`;
+}
+
+function hostedWireDate(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value);
+  return match ? `${match[1]}/${match[2]}/${match[3]} ${match[4]}:${match[5]}:00` : '';
+}
+
+function renderHostedLobby(status) {
+  const wasLocked = Boolean(state.hostedLobby && state.hostedLobby.state !== 'none');
+  state.hostedLobby = status;
+  const active = status.state === 'active';
+  const pending = status.state === 'creating';
+  const unknown = status.state === 'unknown' || Boolean(status.uncertainOperation);
+  $('#hostLobbyTitle').textContent = active ? (status.summary?.pokemonId || 'Hostad lobby') : unknown ? 'Osäkert lobbyresultat' : pending ? 'Skapar lobby…' : 'Egen Raid NOW-lobby';
+  $('#hostLobbyStatus').textContent = active
+    ? status.started === true ? 'Raiden är markerad som startad.' : `Lobby ${status.raidId} är öppen.`
+    : unknown ? 'En tidigare åtgärd kunde inte bekräftas. Kontrollera Raid NOW innan du glömmer tillståndet lokalt.'
+      : pending ? 'Lobbyåtgärden pågår.' : 'Skapa en lobby och hantera gäster här.';
+  $('#hostLobbyDetails').classList.toggle('hidden', !active);
+  $('#hostLobbyCount').textContent = String(status.count ?? 0);
+  $('#hostLobbyReadyCount').textContent = String(status.readyCount ?? 0);
+  $('#openHostLobby').classList.toggle('hidden', !status.canCreate);
+  $('#startHostedRaid').classList.toggle('hidden', !active);
+  $('#startHostedRaid').disabled = !status.canStart;
+  $('#closeHostedLobby').classList.toggle('hidden', !active);
+  $('#closeHostedLobby').disabled = !status.canClose;
+  $('#abandonHostedLobby').classList.toggle('hidden', !status.canAbandon);
+  $('#hostLobbyMessage').textContent = status.error || '';
+  $('#hostLobbyMessage').classList.toggle('error', Boolean(status.error));
+  const players = $('#hostLobbyPlayers');
+  players.replaceChildren();
+  if (!status.players?.length) {
+    const empty = document.createElement('p');
+    empty.className = 'muted'; empty.textContent = 'Inga gäster ännu.'; players.append(empty);
+  } else {
+    for (const player of status.players) {
+      const row = document.createElement('article'); row.className = 'host-player-row';
+      const name = document.createElement('strong'); name.className = 'host-player-name'; name.textContent = player.trainerName || 'Okänd tränare';
+      const meta = document.createElement('span'); meta.className = 'host-player-meta';
+      const rating = player.rating === null ? 'utan betyg' : `${player.rating}/5`;
+      meta.textContent = `${countryFlag(player.countryCode)} TL ${player.level} · ${rating} · ${player.ready ? 'redo' : 'inte redo'}`;
+      const identity = document.createElement('div'); identity.append(name, meta); row.append(identity);
+      const kick = document.createElement('button'); kick.type = 'button'; kick.className = 'danger'; kick.textContent = 'Kicka'; kick.disabled = !player.canKick;
+      kick.addEventListener('click', async () => {
+        if (!window.confirm(`Kicka ${player.trainerName || 'gästen'} från lobbyn?`)) return;
+        kick.disabled = true;
+        try {
+          const guestId = player.id;
+          await mutateHostedLobby('/api/hosted-lobby/kick', { method: 'POST', body: JSON.stringify({ guestId }) });
+        } catch (error) { $('#hostLobbyMessage').textContent = error.message; }
+      });
+      row.append(kick); players.append(row);
+    }
+  }
+  updateControls();
+  const isLocked = status.state !== 'none';
+  if (wasLocked !== isLocked) renderRaids();
+}
+
+async function mutateHostedLobby(path, options) {
+  const mutationRevision = hostedLobbyOrdering.beginMutation();
+  try {
+    const status = await api(path, options);
+    hostedLobbyOrdering.finishMutation(mutationRevision, status, renderHostedLobby);
+    return status;
+  } catch (error) {
+    const current = hostedLobbyOrdering.finishMutation(mutationRevision);
+    if (!current) return { stale: true };
+    throw error;
+  }
+}
+
+async function refreshHostedLobby() {
+  if (state.hostedLobbyRefreshInFlight || hostedLobbyOrdering.mutationInFlight) return;
+  const startRevision = hostedLobbyOrdering.captureRead();
+  state.hostedLobbyRefreshInFlight = true;
+  try {
+    const status = await api('/api/hosted-lobby');
+    hostedLobbyOrdering.applyRead(startRevision, status, renderHostedLobby);
+  } catch (error) {
+    if (hostedLobbyOrdering.isReadCurrent(startRevision)) $('#hostLobbyMessage').textContent = `Kunde inte uppdatera lobbyn: ${error.message}`;
+  } finally { state.hostedLobbyRefreshInFlight = false; }
+}
+
 async function loadRaids({ dismissStaleWarning = false } = {}) {
   $('#raidUpdated').textContent = 'Hämtar raider…';
   try {
     const data = await api('/api/raids?rank=0');
     state.catalog = data.bosses || [];
     state.fetchedAt = data.fetchedAt;
+    renderHostedPokemonOptions();
     const reconciliation = reconcileCurrentSelection({ dismissStaleWarning });
     $('#raidUpdated').textContent = `Senast uppdaterad ${formatTime(data.fetchedAt)} · ${state.catalog.length} raidbossar`;
     renderRaids();
@@ -587,10 +697,79 @@ $('#profileForm').addEventListener('submit', async (event) => {
     saveLocalProfile(localStorage, state.profile); updateProfileLabel();
     message.textContent = 'Sparad.'; updateControls(); $('#profileDialog').close();
     if (state.pendingStart) { state.pendingStart = false; await startSearch(); }
+    if (state.pendingHost) { state.pendingHost = false; $('#openHostLobby').click(); }
   } catch (error) {
     message.className = 'form-message error';
     message.textContent = error.data?.errors ? Object.values(error.data.errors).join(' ') : error.message;
   }
+});
+
+$('#openHostLobby').addEventListener('click', () => {
+  if (!profileReady()) {
+    state.pendingHost = true;
+    $('#profileMessage').textContent = 'Fyll i profilen för att hosta en raid.';
+    $('#profileDialog').showModal();
+    return;
+  }
+  renderHostedPokemonOptions();
+  if (!$('#hostStartDate').value) $('#hostStartDate').value = defaultHostedStartDate();
+  $('#hostLobbyFormMessage').textContent = '';
+  $('#hostLobbyDialog').showModal();
+});
+
+$('#hostPassType').addEventListener('change', () => {
+  const remote = $('#hostPassType').value === 'remote';
+  const ten = [...$('#hostMaxUsers').options].find((option) => option.value === '10');
+  ten.disabled = remote;
+  if (remote && $('#hostMaxUsers').value === '10') $('#hostMaxUsers').value = '5';
+});
+
+$('#hostLobbyForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const message = $('#hostLobbyFormMessage');
+  const submit = form.querySelector('button[type="submit"]');
+  message.className = 'form-message'; message.textContent = 'Skapar…'; submit.disabled = true;
+  const payload = {
+    profile: state.profile,
+    startDate: hostedWireDate($('#hostStartDate').value),
+    pokemonId: $('#hostPokemon').value,
+    currentWeather: $('#hostCurrentWeather').value,
+    gymColor: $('#hostGymColor').value,
+    passType: $('#hostPassType').value,
+    maxUsers: Number($('#hostMaxUsers').value),
+    weatherBoosted: $('#hostWeatherBoosted').checked,
+    guestLevel: Number($('#hostGuestLevel').value),
+    guestRating: $('#hostGuestRating').value,
+    private: $('#hostPrivate').checked,
+    invitationOnly: $('#hostInvitationOnly').checked,
+    hot: $('#hostHot').checked,
+    megaPokemonEntry: $('#hostMegaPokemonEntry').checked
+  };
+  try {
+    await mutateHostedLobby('/api/hosted-lobby', { method: 'POST', body: JSON.stringify(payload) });
+    $('#hostLobbyDialog').close();
+  } catch (error) {
+    message.className = 'form-message error'; message.textContent = error.message;
+  } finally { submit.disabled = false; }
+});
+
+$('#startHostedRaid').addEventListener('click', async () => {
+  if (!window.confirm('Markera att raiden börjar? Gäster kan därefter inte hanteras som vanligt.')) return;
+  try { await mutateHostedLobby('/api/hosted-lobby/start', { method: 'POST', body: '{}' }); }
+  catch (error) { $('#hostLobbyMessage').textContent = error.message; }
+});
+
+$('#closeHostedLobby').addEventListener('click', async () => {
+  if (!window.confirm('Stäng den hostade lobbyn?')) return;
+  try { await mutateHostedLobby('/api/hosted-lobby/close', { method: 'POST', body: '{}' }); }
+  catch (error) { $('#hostLobbyMessage').textContent = error.message; }
+});
+
+$('#abandonHostedLobby').addEventListener('click', async () => {
+  if (!window.confirm('Glöm lobbyn endast lokalt? Detta skickar ingen ny åtgärd till Raid NOW.')) return;
+  try { await mutateHostedLobby('/api/hosted-lobby/abandon', { method: 'POST', body: '{}' }); }
+  catch (error) { $('#hostLobbyMessage').textContent = error.message; }
 });
 
 async function startSearch() {
@@ -819,6 +998,7 @@ async function refreshStatusAfterMutation() {
 
 function startStatusPolling() {
   if (!state.statusTimer) state.statusTimer = setInterval(refreshAutoJoinStatus, 5_000);
+  if (!state.hostedLobbyTimer) state.hostedLobbyTimer = setInterval(refreshHostedLobby, 5_000);
 }
 
 function closeBrowserResources() {
@@ -826,9 +1006,11 @@ function closeBrowserResources() {
   if (events) events.close();
   if (state.activeRaidTimer) clearInterval(state.activeRaidTimer);
   if (state.statusTimer) clearInterval(state.statusTimer);
+  if (state.hostedLobbyTimer) clearInterval(state.hostedLobbyTimer);
   state.eventSource = null;
   state.activeRaidTimer = null;
   state.statusTimer = null;
+  state.hostedLobbyTimer = null;
 }
 
 function resumeBrowserResources() {
@@ -875,9 +1057,9 @@ function connectEvents() {
 }
 
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) refreshAutoJoinStatus();
+  if (!document.hidden) { refreshAutoJoinStatus(); refreshHostedLobby(); }
 });
-window.addEventListener('focus', refreshAutoJoinStatus);
+window.addEventListener('focus', () => { refreshAutoJoinStatus(); refreshHostedLobby(); });
 
 async function init() {
   state.config = await api('/api/config');
@@ -889,6 +1071,7 @@ async function init() {
   await loadProfile();
   await loadRaids();
   renderStatus(await api('/api/autojoin/status'));
+  await refreshHostedLobby();
   connectEvents();
 }
 

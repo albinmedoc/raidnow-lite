@@ -4,6 +4,7 @@ import {
   bossCardAriaLabel,
   countryFlag,
   createBrowserResetController,
+  createStatusOrdering,
   applyStatusIfUnchanged,
   formatLobbyPlayerCount,
   formatRaidRating,
@@ -18,6 +19,37 @@ import {
   queueSelectionFromBosses,
   workflowStatusPresentation
 } from '../public/ui-helpers.js';
+
+test('status ordering rejects reads older than a hosted-lobby mutation', () => {
+  const ordering = createStatusOrdering();
+  const rendered = [];
+  const oldPoll = ordering.captureRead();
+  const mutation = ordering.beginMutation();
+  assert.equal(ordering.applyRead(oldPoll, 'old-open', (value) => rendered.push(value)), false);
+  assert.equal(ordering.finishMutation(mutation, 'closed', (value) => rendered.push(value)), true);
+  assert.deepEqual(rendered, ['closed']);
+});
+
+test('status ordering lets only the newest hosted-lobby mutation render', () => {
+  const ordering = createStatusOrdering();
+  const rendered = [];
+  const first = ordering.beginMutation();
+  const second = ordering.beginMutation();
+  assert.equal(ordering.finishMutation(first, 'started', (value) => rendered.push(value)), false);
+  assert.equal(ordering.finishMutation(second, 'closed', (value) => rendered.push(value)), true);
+  assert.deepEqual(rendered, ['closed']);
+});
+
+test('status ordering identifies whether a failed hosted mutation is still current', () => {
+  const ordering = createStatusOrdering();
+  const current = ordering.beginMutation();
+  assert.equal(ordering.finishMutation(current), true);
+
+  const older = ordering.beginMutation();
+  const newer = ordering.beginMutation();
+  assert.equal(ordering.finishMutation(newer, 'closed', () => {}), true);
+  assert.equal(ordering.finishMutation(older), false);
+});
 
 test('boss card accessibility names retain shiny and CP metadata for Dynamax bosses', () => {
   assert.equal(bossCardAriaLabel({

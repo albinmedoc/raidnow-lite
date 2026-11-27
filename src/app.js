@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AutoJoinWorker } from './core/autojoin-worker.js';
+import { HostedLobbyController } from './core/hosted-lobby-controller.js';
 import { CliCommandError } from './adapters/cli-process-runner.js';
 import { normalizeSearchSelection } from './core/search-selection.js';
 import { normalizeProfile, validateProfile } from './core/validation.js';
@@ -18,6 +19,8 @@ const MUTATION_ROUTES = new Set([
   'POST /api/login', 'POST /api/session/import', 'PUT /api/profile',
   'POST /api/autojoin/start', 'POST /api/autojoin/stop',
   'POST /api/autojoin/abandon',
+  'POST /api/hosted-lobby', 'POST /api/hosted-lobby/start',
+  'POST /api/hosted-lobby/kick', 'POST /api/hosted-lobby/close', 'POST /api/hosted-lobby/abandon',
   'POST /api/active-raid/ready', 'POST /api/active-raid/leave', 'POST /api/session/reset',
   'POST /api/push/subscriptions', 'DELETE /api/push/subscriptions'
 ]);
@@ -34,6 +37,11 @@ const STATEFUL_API_METHODS = new Map([
   ['/api/autojoin/start', new Set(['POST'])],
   ['/api/autojoin/stop', new Set(['POST'])],
   ['/api/autojoin/abandon', new Set(['POST'])],
+  ['/api/hosted-lobby', new Set(['GET', 'POST'])],
+  ['/api/hosted-lobby/start', new Set(['POST'])],
+  ['/api/hosted-lobby/kick', new Set(['POST'])],
+  ['/api/hosted-lobby/close', new Set(['POST'])],
+  ['/api/hosted-lobby/abandon', new Set(['POST'])],
   ['/api/active-raid/ready', new Set(['POST'])],
   ['/api/active-raid/leave', new Set(['POST'])],
   ['/api/session/reset', new Set(['POST'])],
@@ -88,6 +96,56 @@ async function readJson(request, maxBodyBytes) {
   }
 }
 
+function normalizeHostedLobbyInput(input, bosses) {
+  const profile = normalizeProfile(input.profile ?? {});
+  const profileErrors = validateProfile(profile);
+  if (Object.keys(profileErrors).length) throw new HttpError(400, 'Complete your profile first.');
+  const value = {
+    startDate: String(input.startDate ?? ''),
+    pokemonId: String(input.pokemonId ?? ''),
+    currentWeather: String(input.currentWeather ?? ''),
+    gymColor: String(input.gymColor ?? ''),
+    passType: String(input.passType ?? ''),
+    maxUsers: Number(input.maxUsers),
+    weatherBoosted: input.weatherBoosted,
+    guestLevel: Number(input.guestLevel),
+    guestRating: String(input.guestRating ?? ''),
+    private: input.private,
+    invitationOnly: input.invitationOnly,
+    hot: input.hot,
+    megaPokemonEntry: input.megaPokemonEntry
+  };
+  const weather = new Set(['unknown', 'sunny', 'clear-night', 'partly-cloudy', 'partly-cloudy-night', 'cloudy', 'rain', 'snow', 'windy', 'fog']);
+  const colors = new Set(['neutral', 'valor', 'mystic', 'instinct']);
+  const passTypes = new Set(['remote', 'local']);
+  const ratings = new Set(['all', '0', '1', '2', '3', '4', '5']);
+  const booleans = ['weatherBoosted', 'private', 'invitationOnly', 'hot', 'megaPokemonEntry'];
+  const valid = isValidHostedStartDate(value.startDate)
+    && value.pokemonId.length > 0 && value.pokemonId.length <= 256
+    && bosses.some((boss) => boss?.pokemon === value.pokemonId)
+    && weather.has(value.currentWeather) && colors.has(value.gymColor) && passTypes.has(value.passType)
+    && Number.isInteger(value.maxUsers) && value.maxUsers >= 1 && value.maxUsers <= 10
+    && !(value.passType === 'remote' && value.maxUsers === 10)
+    && [5, 40, 50, 60, 70].includes(value.guestLevel) && ratings.has(value.guestRating)
+    && booleans.every((key) => typeof value[key] === 'boolean');
+  if (!valid) throw new HttpError(400, 'Invalid hosted lobby settings.');
+  return { profile, input: value };
+}
+
+function isValidHostedStartDate(value) {
+  const match = /^(\d{4})\/(\d{2})\/(\d{2}) (\d{2}):(\d{2}):(\d{2})$/.exec(value);
+  if (!match) return false;
+  const [year, month, day, hour, minute, second] = match.slice(1).map(Number);
+  const date = new Date(`${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${match[6]}Z`);
+  return !Number.isNaN(date.getTime())
+    && date.getUTCFullYear() === year
+    && date.getUTCMonth() + 1 === month
+    && date.getUTCDate() === day
+    && date.getUTCHours() === hour
+    && date.getUTCMinutes() === minute
+    && date.getUTCSeconds() === second;
+}
+
 export function createApp({ adapter, store, sessionManager = null, pushNotifier = null, pollIntervalMs = 15_000, scanIntervalMs = 1_000, publicDir, mode = 'demo', liveWrites = false, anonymousOnly = false, logger = console, maxBodyBytes = DEFAULT_MAX_BODY_BYTES, mutationLimit = DEFAULT_MUTATION_LIMIT, mutationWindowMs = DEFAULT_MUTATION_WINDOW_MS, sseHeartbeatMs = DEFAULT_SSE_HEARTBEAT_MS, now = Date.now }) {
   const defaultWorker = sessionManager ? null : new AutoJoinWorker({
     adapter,
@@ -95,14 +153,32 @@ export function createApp({ adapter, store, sessionManager = null, pushNotifier 
     scanIntervalMs,
     persist: (snapshot) => store.update({ autoJoin: snapshot })
   });
+  const defaultHostedLobby = sessionManager ? null : new HostedLobbyController({
+    adapter,
+    persist: (snapshot) => store.update({ hostedLobby: snapshot })
+  });
   const defaultClients = new Set();
-  const defaultContext = { adapter, store, worker: defaultWorker, clients: defaultClients, restoreError: null };
+  const defaultContext = { adapter, store, worker: defaultWorker, hostedLobby: defaultHostedLobby, clients: defaultClients, restoreError: null };
   const mutationBuckets = new WeakMap();
+  const workflowStartGates = new WeakMap();
   const publicPath = publicDir instanceof URL ? fileURLToPath(publicDir) : publicDir;
 
   function publish(clients, event, data) {
     const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
     for (const client of clients) client.write(payload);
+  }
+
+  async function withWorkflowStartGate(context, operation) {
+    const previous = workflowStartGates.get(context) ?? Promise.resolve();
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    workflowStartGates.set(context, previous.catch(() => {}).then(() => held));
+    await previous.catch(() => {});
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
   }
 
   if (defaultWorker) {
@@ -122,7 +198,7 @@ export function createApp({ adapter, store, sessionManager = null, pushNotifier 
   const pushConfig = pushNotifier?.publicConfig?.() ?? { enabled: false, publicKey: null };
   const ready = sessionManager
     ? sessionManager.ready()
-    : defaultWorker.restore(store.get().autoJoin);
+    : Promise.all([defaultWorker.restore(store.get().autoJoin), defaultHostedLobby.restore(store.get().hostedLobby)]);
 
   const server = http.createServer(async (request, response) => {
     let context;
@@ -186,7 +262,7 @@ export function createApp({ adapter, store, sessionManager = null, pushNotifier 
         ? await sessionManager.resolve(request, response, { lease: true })
         : defaultContext;
       releaseContext = Boolean(sessionManager);
-      const { adapter: activeAdapter, store: activeStore, worker, clients, restoreError } = context;
+      const { adapter: activeAdapter, store: activeStore, worker, hostedLobby, clients, restoreError } = context;
       const restoreLocked = Boolean(restoreError);
       const restoreFailure = { state: 'error', error: 'Auto Join restore failed; saved work remains locked for retry.' };
       if (MUTATION_ROUTES.has(`${request.method} ${url.pathname}`)) {
@@ -276,6 +352,38 @@ export function createApp({ adapter, store, sessionManager = null, pushNotifier 
         }));
         return sendJson(response, 200, { raids, bosses: groupRaidBosses(raids), fetchedAt: new Date().toISOString() });
       }
+      if (request.method === 'GET' && url.pathname === '/api/hosted-lobby') {
+        return sendJson(response, 200, await hostedLobby.refresh());
+      }
+      if (request.method === 'POST' && url.pathname === '/api/hosted-lobby') {
+        return await withWorkflowStartGate(context, async () => {
+          if (restoreLocked) return sendJson(response, 409, { message: restoreFailure.error });
+          if (!['idle', 'stopped', 'error'].includes(worker.status().state)) return sendJson(response, 409, { message: 'Stop Auto Join before hosting a lobby.' });
+          if (!activeAdapter.listCurrentRaidBosses) return sendJson(response, 501, { message: 'Hosted lobbies are unavailable in this mode.' });
+          const body = await readJson(request, maxBodyBytes);
+          const normalized = normalizeHostedLobbyInput(body, await activeAdapter.listCurrentRaidBosses());
+          if (!['idle', 'stopped', 'error'].includes(worker.status().state)) return sendJson(response, 409, { message: 'Stop Auto Join before hosting a lobby.' });
+          const status = await hostedLobby.create(normalized);
+          return sendJson(response, status.state === 'active' ? 201 : 202, status);
+        });
+      }
+      if (request.method === 'POST' && url.pathname === '/api/hosted-lobby/start') {
+        if (restoreLocked) return sendJson(response, 409, { message: restoreFailure.error });
+        return sendJson(response, 200, await hostedLobby.start());
+      }
+      if (request.method === 'POST' && url.pathname === '/api/hosted-lobby/kick') {
+        if (restoreLocked) return sendJson(response, 409, { message: restoreFailure.error });
+        const body = await readJson(request, maxBodyBytes);
+        return sendJson(response, 200, await hostedLobby.kick(String(body.guestId ?? '')));
+      }
+      if (request.method === 'POST' && url.pathname === '/api/hosted-lobby/close') {
+        if (restoreLocked) return sendJson(response, 409, { message: restoreFailure.error });
+        return sendJson(response, 200, await hostedLobby.close());
+      }
+      if (request.method === 'POST' && url.pathname === '/api/hosted-lobby/abandon') {
+        if (restoreLocked) return sendJson(response, 409, { message: restoreFailure.error });
+        return sendJson(response, 200, await hostedLobby.abandon());
+      }
       if (request.method === 'GET' && url.pathname === '/api/autojoin/status') {
         return sendJson(response, 200, restoreLocked ? restoreFailure : worker.status());
       }
@@ -308,17 +416,21 @@ export function createApp({ adapter, store, sessionManager = null, pushNotifier 
         return sendJson(response, 200, { raid: enrichRaids([raid])[0], ...details, fetchedAt: new Date().toISOString() });
       }
       if (request.method === 'POST' && url.pathname === '/api/autojoin/start') {
-        if (restoreLocked) return sendJson(response, 409, { message: restoreFailure.error });
-        if (!['idle', 'stopped', 'error'].includes(worker.status().state)) return sendJson(response, 409, { message: 'An Auto Join search is already active.' });
-        const input = await readJson(request, maxBodyBytes);
-        const profile = sessionManager
-          ? normalizeProfile(input.profile ?? {})
-          : activeStore.get().profile ?? {};
-        const errors = validateProfile(profile);
-        if (Object.keys(errors).length) return sendJson(response, 400, { message: 'Complete your profile first.', errors });
-        const selection = normalizeSearchSelection(input);
-        const status = await worker.start({ profile, selection });
-        return sendJson(response, 200, status);
+        return await withWorkflowStartGate(context, async () => {
+          if (restoreLocked) return sendJson(response, 409, { message: restoreFailure.error });
+          if (hostedLobby.hasObligation()) return sendJson(response, 409, { message: 'Close or resolve the hosted lobby before starting Auto Join.' });
+          if (!['idle', 'stopped', 'error'].includes(worker.status().state)) return sendJson(response, 409, { message: 'An Auto Join search is already active.' });
+          const input = await readJson(request, maxBodyBytes);
+          const profile = sessionManager
+            ? normalizeProfile(input.profile ?? {})
+            : activeStore.get().profile ?? {};
+          const errors = validateProfile(profile);
+          if (Object.keys(errors).length) return sendJson(response, 400, { message: 'Complete your profile first.', errors });
+          const selection = normalizeSearchSelection(input);
+          if (hostedLobby.hasObligation()) return sendJson(response, 409, { message: 'Close or resolve the hosted lobby before starting Auto Join.' });
+          const status = await worker.start({ profile, selection });
+          return sendJson(response, 200, status);
+        });
       }
       if (request.method === 'POST' && url.pathname === '/api/autojoin/stop') {
         if (restoreLocked) return sendJson(response, 409, { message: restoreFailure.error });

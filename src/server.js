@@ -39,7 +39,7 @@ const cliRunner = mode === 'live'
 
 const sessionManager = new SessionManager({
   rootDir: sessionRoot,
-  defaults: { profile: {}, account: null, autoJoin: null, pushSubscriptions: [], pushDeliveryJobs: [] },
+  defaults: { profile: {}, account: null, autoJoin: null, hostedLobby: null, pushSubscriptions: [], pushDeliveryJobs: [] },
   ttlMs: sessionTtlMs,
   maxContexts: maxSessionContexts,
   sessionSseLimit: perSessionSseLimit,

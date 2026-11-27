@@ -87,10 +87,41 @@ test('browser periodically reconciles status when an SSE update is missed', asyn
   assert.match(source, /clearInterval\(state\.statusTimer\)/);
 });
 
+test('hosted lobby UI exposes semantic creation, guest controls and recovery without browser raid ids', async () => {
+  const [html, source, css] = await Promise.all([asset('index.html'), asset('app.js'), asset('styles.css')]);
+  for (const id of [
+    'hostLobbyPanel', 'openHostLobby', 'hostLobbyDialog', 'hostLobbyForm', 'hostPokemon',
+    'hostCurrentWeather', 'hostGymColor', 'hostPassType', 'hostMaxUsers', 'hostGuestLevel',
+    'hostGuestRating', 'hostWeatherBoosted', 'hostLobbyPlayers', 'startHostedRaid',
+    'closeHostedLobby', 'abandonHostedLobby'
+  ]) assert.match(html, new RegExp(`id="${id}"`));
+  for (const value of ['neutral', 'valor', 'mystic', 'instinct', 'remote', 'local', 'unknown', 'cloudy', 'all']) {
+    assert.match(html, new RegExp(`value="${value}"`));
+  }
+  assert.doesNotMatch(html, /name="raidId"|id="hostRaidId"/);
+  for (const endpoint of [
+    '/api/hosted-lobby', '/api/hosted-lobby/start', '/api/hosted-lobby/kick',
+    '/api/hosted-lobby/close', '/api/hosted-lobby/abandon'
+  ]) assert.ok(source.includes(endpoint));
+  assert.match(source, /body:\s*JSON\.stringify\(\{ guestId \}\)/);
+  assert.doesNotMatch(source, /JSON\.stringify\(\{[^}]*raidId[^}]*guestId/);
+  assert.match(source, /setInterval\(refreshHostedLobby, 5_000\)/);
+  assert.match(source, /createStatusOrdering\(\)/);
+  assert.match(source, /hostedLobbyOrdering\.captureRead\(\)/);
+  assert.match(source, /hostedLobbyOrdering\.beginMutation\(\)/);
+  assert.match(source, /hostedLobbyOrdering\.applyRead\(startRevision, status, renderHostedLobby\)/);
+  assert.match(source, /hostedLobbyOrdering\.finishMutation\(mutationRevision, status, renderHostedLobby\)/);
+  assert.match(source, /const current = hostedLobbyOrdering\.finishMutation\(mutationRevision\)/);
+  assert.match(source, /if \(!current\) return \{ stale: true \}/);
+  assert.match(css, /\.host-lobby-dialog-card\{[^}]*overflow-y:auto/);
+  assert.match(css, /\.host-player-name\{[^}]*overflow-wrap:anywhere/);
+  assert.match(css, /\.host-player-row\{[^}]*min-width:0/);
+});
+
 test('service worker caches only an explicit shell and bypasses APIs, SSE, mutations, and external images', async () => {
   const source = await asset('service-worker.js');
-  assert.match(source, /raidnow-shell-v23/);
-  assert.doesNotMatch(source, /raidnow-shell-v22/);
+  assert.match(source, /raidnow-shell-v24/);
+  assert.doesNotMatch(source, /raidnow-shell-v23/);
   assert.match(source, /const SHELL_ASSETS = \[/);
   assert.match(source, /request\.method !== 'GET'/);
   assert.match(source, /url\.origin !== self\.location\.origin/);
@@ -133,8 +164,9 @@ test('browser UI exposes local boss search, trainer identity, and safe reset con
   assert.match(html, /Populärast just nu/);
   assert.match(html, /id="popularRaidGrid"/);
   for (const id of ['hostRating', 'hostCountry', 'weatherBoost', 'hostLevel']) assert.match(html, new RegExp(`id="${id}"`));
-  assert.match(html, /<option value="0">TL 5\+<\/option>/);
-  assert.doesNotMatch(html, /<option value="5">TL 5\+<\/option>/);
+  const filterDialog = html.slice(html.indexOf('id="filterDialog"'));
+  assert.match(filterDialog, /<option value="0">TL 5\+<\/option>/);
+  assert.doesNotMatch(filterDialog, /<option value="5">TL 5\+<\/option>/);
   assert.doesNotMatch(html, /guest6|6 eller fler|Invite 6/i);
 });
 

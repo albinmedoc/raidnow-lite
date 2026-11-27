@@ -12,7 +12,10 @@ function protocolError() {
 }
 
 function writesDisabled() {
-  return new CliRunnerError('WRITES_DISABLED', 'Live writes are disabled.');
+  const error = new CliRunnerError('WRITES_DISABLED', 'Live writes are disabled.');
+  error.status = 501;
+  error.writeOutcome = 'not-dispatched';
+  return error;
 }
 
 function isObject(value) {
@@ -31,6 +34,21 @@ function optionalPositiveInteger(value) {
   if (value === null) return null;
   if (!Number.isInteger(value) || value <= 0) throw protocolError();
   return value;
+}
+
+function boundedIdentifier(value) {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 256 || value.trim() !== value) throw protocolError();
+  return value;
+}
+
+function nonNegativeInteger(value) {
+  if (!Number.isInteger(value) || value < 0) throw protocolError();
+  return value;
+}
+
+function booleanFlag(args, enabled, flag) {
+  if (enabled === true) args.push(flag);
+  else if (enabled !== false) throw invalidInput();
 }
 
 function profileHistoryEntry(entry) {
@@ -260,6 +278,91 @@ export class CliRaidNowAdapter {
     const data = await this.#run(['queue', 'cancel', '--verify=false'], { signal });
     this.#assertObject(data);
     return { status: 'success' };
+  }
+
+  async createHostedLobby(input = {}, profile = {}, { signal } = {}) {
+    this.#assertWritesAllowed();
+    const startDate = boundedIdentifier(input.startDate);
+    const pokemonId = boundedIdentifier(input.pokemonId);
+    const currentWeather = boundedIdentifier(input.currentWeather);
+    const gymColor = boundedIdentifier(input.gymColor);
+    const passType = boundedIdentifier(input.passType);
+    const guestRating = boundedIdentifier(input.guestRating);
+    if (!Number.isInteger(input.maxUsers) || input.maxUsers < 1 || input.maxUsers > 10
+      || ![5, 40, 50, 60, 70].includes(input.guestLevel)) throw invalidInput();
+    const args = [
+      'host', 'create', '--start-date', startDate, '--pokemon', pokemonId,
+      ...trainerArgs(profile, { code: true }),
+      '--current-weather', currentWeather, '--max-users', String(input.maxUsers),
+      '--gym-color', gymColor, '--pass-type', passType,
+      '--guest-level', String(input.guestLevel), '--guest-rating', guestRating
+    ];
+    booleanFlag(args, input.weatherBoosted, '--weather-boosted');
+    booleanFlag(args, input.private, '--private');
+    booleanFlag(args, input.invitationOnly, '--invitation-only');
+    booleanFlag(args, input.hot, '--hot');
+    booleanFlag(args, input.megaPokemonEntry, '--mega-pokemon-entry');
+    const data = await this.#run(args, { stdin: profile?.trainerCode, signal });
+    this.#assertObject(data);
+    if (data.created !== true) throw protocolError();
+    return { raidId: boundedIdentifier(data.raidId) };
+  }
+
+  async getHostedLobbyStatus(id, { signal } = {}) {
+    const raidId = boundedIdentifier(String(id));
+    const data = await this.#run(['host', 'status', '--raid-id', raidId], { signal });
+    this.#assertObject(data);
+    assertObjectArray(data.players);
+    assertBoolean(data.raidDeleted);
+    const count = nonNegativeInteger(data.count);
+    const readyCount = nonNegativeInteger(data.readyCount);
+    if (readyCount > count) throw protocolError();
+    const players = data.players.map((player) => {
+      const playerId = boundedIdentifier(player.id);
+      assertBoolean(player.ready);
+      assertBoolean(player.isMe);
+      if (!Number.isInteger(player.level) || player.level < 0 || player.level > 80
+        || (player.rating !== null && (!Number.isInteger(player.rating) || player.rating < -1 || player.rating > 5))) throw protocolError();
+      return {
+        id: playerId,
+        trainerName: typeof player.trainerName === 'string' ? player.trainerName : '',
+        level: player.level,
+        countryCode: typeof player.country === 'string' ? player.country : '',
+        rating: player.rating,
+        ready: player.ready,
+        isMe: player.isMe
+      };
+    });
+    if (players.length > count) throw protocolError();
+    return { players, count, readyCount, raidDeleted: data.raidDeleted };
+  }
+
+  async startHostedLobby(id, { signal } = {}) {
+    this.#assertWritesAllowed();
+    const raidId = boundedIdentifier(String(id));
+    const data = await this.#run(['host', 'start', '--raid-id', raidId], { signal });
+    this.#assertObject(data);
+    if (data.raidId !== raidId) throw protocolError();
+    return { started: true };
+  }
+
+  async kickHostedGuest(id, guestId, { signal } = {}) {
+    this.#assertWritesAllowed();
+    const raidId = boundedIdentifier(String(id));
+    const canonicalGuestId = boundedIdentifier(String(guestId));
+    const data = await this.#run(['host', 'kick', '--raid-id', raidId, '--guest-id', canonicalGuestId], { signal });
+    this.#assertObject(data);
+    if (data.raidId !== raidId || data.guestId !== canonicalGuestId) throw protocolError();
+    return { kicked: true };
+  }
+
+  async closeHostedLobby(id, { signal } = {}) {
+    this.#assertWritesAllowed();
+    const raidId = boundedIdentifier(String(id));
+    const data = await this.#run(['host', 'close', '--raid-id', raidId], { signal });
+    this.#assertObject(data);
+    if (data.raidId !== raidId) throw protocolError();
+    return { closed: true };
   }
 
   async findRaid(id, { signal } = {}) {

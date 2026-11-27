@@ -1,6 +1,6 @@
 import { CliCommandError } from '../adapters/cli-process-runner.js';
 
-const WRITE_OPERATIONS = new Set(['createQueue', 'cancelQueue', 'joinRaid', 'leaveRaid']);
+const WRITE_OPERATIONS = new Set(['createQueue', 'cancelQueue', 'joinRaid', 'leaveRaid', 'createHostedLobby', 'startHostedLobby', 'kickHostedGuest', 'closeHostedLobby']);
 const DEFINITE_CLI_EXITS = new Set([2, 3, 4, 5, 6, 7]);
 const CLI_REJECTION_PREFIX = /^Upstream avvisade begäran:\s*/i;
 

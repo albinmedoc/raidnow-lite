@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { chmod, lstat, mkdir, readFile, readdir, stat, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { JsonStore } from './json-store.js';
+import { HostedLobbyController, hasHostedLobbyObligation } from './hosted-lobby-controller.js';
 import { MAX_PUSH_SUBSCRIPTIONS, pushSubscriptionId, raidNotificationMarker } from './web-push.js';
 
 const COOKIE_NAME = 'raidnow_session';
@@ -180,7 +181,7 @@ export class SessionManager {
     rootDir,
     adapterFactory,
     workerFactory,
-    defaults = { account: null, autoJoin: null },
+    defaults = { account: null, autoJoin: null, hostedLobby: null },
     restoreConcurrency = 4,
     logger = console,
     ttlMs = DEFAULT_SESSION_TTL_MS,
@@ -310,7 +311,11 @@ export class SessionManager {
     const adapter = await this.#adapterFactory({ token: store.get().account?.token || '', store, sessionKey: key });
     const persist = (snapshot) => this.#persistWorkerSnapshot(store, snapshot);
     const worker = this.#workerFactory({ adapter, store, sessionKey: key, runOperation: this.#runOperation, persist });
-    const context = { sessionKey: key, store, adapter, worker, clients: new Set(), activeRequests: 0, restoreError: null, workerListeners: [], pushQueue: Promise.resolve(), pushRetryTimer: null, pushStopping: false, pushStopped: false, lastAccess: this.#now() };
+    const hostedLobby = new HostedLobbyController({
+      adapter,
+      persist: (snapshot) => store.update({ hostedLobby: snapshot })
+    });
+    const context = { sessionKey: key, store, adapter, worker, hostedLobby, clients: new Set(), activeRequests: 0, restoreError: null, workerListeners: [], pushQueue: Promise.resolve(), pushRetryTimer: null, pushStopping: false, pushStopped: false, lastAccess: this.#now() };
     if (typeof worker.on === 'function') {
       const onState = (state) => this.publish(context, 'status', state);
       const onMatched = (raid) => {
@@ -329,6 +334,7 @@ export class SessionManager {
       if (!restored && LEGACY_RECOVERABLE_STATES.has(saved?.state) && saved?.profile && saved?.selection && worker.recover) {
         await worker.recover({ profile: saved.profile, selection: saved.selection });
       }
+      await hostedLobby.restore(store.get().hostedLobby);
       if (store.get().restoreError) await store.update({ restoreError: null });
     } catch (error) {
       if (startup) this.#recordStartupError(`${key}.json`, error);
@@ -344,7 +350,7 @@ export class SessionManager {
 
   #isProtected(context) {
     if (context.restoreError || context.clients.size > 0 || context.activeRequests > 0) return true;
-    if (hasDurableObligation(context.store.get().autoJoin) || hasPendingPushDelivery(context.store.get())) return true;
+    if (hasDurableObligation(context.store.get().autoJoin) || hasHostedLobbyObligation(context.store.get().hostedLobby) || hasPendingPushDelivery(context.store.get())) return true;
     let status;
     try {
       status = context.worker.status?.();
@@ -370,7 +376,7 @@ export class SessionManager {
         const info = await stat(path);
         if (info.mtimeMs > cutoff) continue;
         const parsed = JSON.parse(await readFile(path, 'utf8'));
-        if (parsed.restoreError || hasDurableObligation(parsed.autoJoin) || hasPendingPushDelivery(parsed)) continue;
+        if (parsed.restoreError || hasDurableObligation(parsed.autoJoin) || hasHostedLobbyObligation(parsed.hostedLobby) || hasPendingPushDelivery(parsed)) continue;
         await this.#deleteSessionFiles(key);
       } catch (error) {
         if (error.code !== 'ENOENT') continue;
@@ -506,7 +512,7 @@ export class SessionManager {
         const entry = files[cursor++];
         try {
           const parsed = JSON.parse(await readFile(join(this.#rootDir, entry.name), 'utf8'));
-          if (!hasDurableObligation(parsed.autoJoin) && !hasPendingPushDelivery(parsed)) continue;
+          if (!hasDurableObligation(parsed.autoJoin) && !hasHostedLobbyObligation(parsed.hostedLobby) && !hasPendingPushDelivery(parsed)) continue;
           await this.#getOrCreateContext(entry.name.slice(0, -5), { startup: true });
         } catch (error) {
           this.#recordStartupError(entry.name, error);

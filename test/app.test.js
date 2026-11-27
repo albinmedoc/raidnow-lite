@@ -23,6 +23,13 @@ async function close(app) {
   await new Promise((resolve) => app.server.close(resolve));
 }
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
 test('saves and returns a normalized profile', async () => {
   const app = await startTestApp({ async listRaids() { return []; } });
   try {
@@ -214,6 +221,185 @@ test('returns a typed unsupported response when profile reads are unavailable', 
       const response = await fetch(`${app.baseUrl}${path}`);
       assert.equal(response.status, 501);
     }
+  } finally { await close(app); }
+});
+
+test('creates and manages one durable hosted lobby using only the session-owned raid id', async () => {
+  const calls = [];
+  const adapter = {
+    async listCurrentRaidBosses() {
+      return [{ rank: '1', pokemon: 'ピカチュウ(太陽の冠)', displayName: 'Pikachu', image: '', shinyAvailable: true, maxCP20: null, maxCP25: null }];
+    },
+    async createHostedLobby(hostInput, profile) {
+      calls.push(['create', hostInput, profile]);
+      return { raidId: 'raid-9' };
+    },
+    async getHostedLobbyStatus(raidId) {
+      calls.push(['status', raidId]);
+      return {
+        players: [{ id: 'guest-7', trainerName: 'Guest', level: 44, countryCode: 'jp', rating: 4, ready: false, isMe: false }],
+        count: 1, readyCount: 0, raidDeleted: false
+      };
+    },
+    async kickHostedGuest(raidId, guestId) { calls.push(['kick', raidId, guestId]); return { kicked: true }; },
+    async startHostedLobby(raidId) { calls.push(['start', raidId]); return { started: true }; },
+    async closeHostedLobby(raidId) { calls.push(['close', raidId]); return { closed: true }; }
+  };
+  const app = await startTestApp(adapter, { liveWrites: true });
+  const createInput = {
+    profile: { trainerName: 'Albin123', trainerCode: '123456789012', level: 50, countryCode: 'se' },
+    startDate: '2026/11/27 16:23:35', pokemonId: 'ピカチュウ(太陽の冠)', currentWeather: 'cloudy',
+    gymColor: 'mystic', passType: 'remote', maxUsers: 5, weatherBoosted: false,
+    guestLevel: 5, guestRating: 'all', private: false, invitationOnly: false, hot: true, megaPokemonEntry: false
+  };
+  try {
+    const empty = await fetch(`${app.baseUrl}/api/hosted-lobby`).then((response) => response.json());
+    assert.equal(empty.state, 'none');
+    assert.equal(empty.canCreate, true);
+
+    const createdResponse = await fetch(`${app.baseUrl}/api/hosted-lobby`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(createInput)
+    });
+    assert.equal(createdResponse.status, 201);
+    const created = await createdResponse.json();
+    assert.equal(created.state, 'active');
+    assert.equal(created.raidId, 'raid-9');
+    assert.equal(JSON.stringify(app.readStore()).includes(createInput.profile.trainerCode), false);
+
+    const refreshed = await fetch(`${app.baseUrl}/api/hosted-lobby`).then((response) => response.json());
+    assert.equal(refreshed.players[0].id, 'guest-7');
+    assert.equal(refreshed.players[0].canKick, true);
+    const conflictingSearch = await fetch(`${app.baseUrl}/api/autojoin/start`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ profile: createInput.profile, ranks: ['1'], pokemon: [createInput.pokemonId] })
+    });
+    assert.equal(conflictingSearch.status, 409);
+
+    const kicked = await fetch(`${app.baseUrl}/api/hosted-lobby/kick`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ guestId: 'guest-7', raidId: 'wrong-browser-id' })
+    });
+    assert.equal(kicked.status, 200);
+    const started = await fetch(`${app.baseUrl}/api/hosted-lobby/start`, { method: 'POST' });
+    assert.equal(started.status, 200);
+    assert.equal((await started.json()).started, true);
+    const closed = await fetch(`${app.baseUrl}/api/hosted-lobby/close`, { method: 'POST' });
+    assert.equal(closed.status, 200);
+    assert.equal((await closed.json()).state, 'none');
+
+    assert.deepEqual(calls.map((call) => call[0]), ['create', 'status', 'status', 'kick', 'start', 'close']);
+    for (const call of calls.filter((entry) => ['status', 'kick', 'start', 'close'].includes(entry[0]))) assert.equal(call[1], 'raid-9');
+  } finally { await close(app); }
+});
+
+test('host create validates profile, current boss and semantic options before adapter writes', async () => {
+  let writes = 0;
+  const app = await startTestApp({
+    async listCurrentRaidBosses() {
+      return [{ rank: '1', pokemon: '25', displayName: 'Pikachu', image: '', shinyAvailable: true, maxCP20: null, maxCP25: null }];
+    },
+    async createHostedLobby() { writes += 1; return { raidId: 'raid-9' }; }
+  }, { liveWrites: true });
+  try {
+    for (const body of [
+      { pokemonId: '25' },
+      { profile: { trainerName: 'Albin123', trainerCode: '123456789012', level: 50, countryCode: 'se' }, pokemonId: 'missing', startDate: '2026/11/27 16:23:35' },
+      { profile: { trainerName: 'Albin123', trainerCode: '123456789012', level: 50, countryCode: 'se' }, pokemonId: '25', startDate: '2026/11/27 16:23:35', currentWeather: 'storm' },
+      { profile: { trainerName: 'Albin123', trainerCode: '123456789012', level: 50, countryCode: 'se' }, pokemonId: '25', startDate: '2026/99/99 99:99:99', currentWeather: 'unknown', gymColor: 'neutral', passType: 'remote', maxUsers: 5, weatherBoosted: false, guestLevel: 5, guestRating: 'all', private: false, invitationOnly: false, hot: false, megaPokemonEntry: false },
+      { profile: { trainerName: 'Albin123', trainerCode: '123456789012', level: 50, countryCode: 'se' }, pokemonId: '25', startDate: '2026/02/29 12:00:00', currentWeather: 'unknown', gymColor: 'neutral', passType: 'remote', maxUsers: 5, weatherBoosted: false, guestLevel: 5, guestRating: 'all', private: false, invitationOnly: false, hot: false, megaPokemonEntry: false }
+    ]) {
+      const response = await fetch(`${app.baseUrl}/api/hosted-lobby`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
+      });
+      assert.equal(response.status, 400);
+    }
+    assert.equal(writes, 0);
+  } finally { await close(app); }
+});
+
+test('concurrent host creation and Auto Join start admit only one workflow', async () => {
+  const gate = deferred();
+  const entered = deferred();
+  const adapter = new MockRaidNowAdapter({ matchAfterPolls: 100 });
+  const listBosses = adapter.listCurrentRaidBosses.bind(adapter);
+  adapter.listCurrentRaidBosses = async () => {
+    entered.resolve();
+    await gate.promise;
+    return listBosses();
+  };
+  const app = await startTestApp(adapter, { liveWrites: true });
+  const searchReceived = deferred();
+  app.server.on('request', (request) => {
+    if (request.method === 'POST' && request.url === '/api/autojoin/start') searchReceived.resolve();
+  });
+  const profile = { trainerName: 'Albin123', trainerCode: '123456789012', level: 50, countryCode: 'se' };
+  await fetch(`${app.baseUrl}/api/profile`, {
+    method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(profile)
+  });
+  const hostRequest = fetch(`${app.baseUrl}/api/hosted-lobby`, {
+    method: 'POST', headers: { 'content-type': 'application/json', connection: 'close' },
+    body: JSON.stringify({ profile, startDate: '2026/11/27 16:23:35', pokemonId: 'Giratina', currentWeather: 'unknown', gymColor: 'neutral', passType: 'remote', maxUsers: 5, weatherBoosted: false, guestLevel: 5, guestRating: 'all', private: false, invitationOnly: false, hot: false, megaPokemonEntry: false })
+  });
+  await entered.promise;
+  const searchRequest = fetch(`${app.baseUrl}/api/autojoin/start`, {
+    method: 'POST', headers: { 'content-type': 'application/json', connection: 'close' },
+    body: JSON.stringify({ profile, ranks: ['5'], pokemon: ['Giratina'] })
+  });
+  await searchReceived.promise;
+  gate.resolve();
+  try {
+    const [hostResponse, searchResponse] = await Promise.all([hostRequest, searchRequest]);
+    assert.deepEqual([hostResponse.status, searchResponse.status].sort(), [201, 409]);
+    const saved = app.readStore();
+    assert.equal(saved.hostedLobby?.lobby?.state === 'active' && saved.autoJoin?.intent === 'search', false);
+  } finally { await close(app); }
+});
+
+test('concurrent Auto Join start and host creation admit only one workflow', async () => {
+  const gate = deferred();
+  const entered = deferred();
+  const adapter = new MockRaidNowAdapter({ matchAfterPolls: 100 });
+  const app = await startTestApp(adapter, { liveWrites: true });
+  const originalStart = app.worker.start.bind(app.worker);
+  app.worker.start = async (...args) => {
+    entered.resolve();
+    await gate.promise;
+    return originalStart(...args);
+  };
+  const profile = { trainerName: 'Albin123', trainerCode: '123456789012', level: 50, countryCode: 'se' };
+  await fetch(`${app.baseUrl}/api/profile`, {
+    method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(profile)
+  });
+  const searchRequest = fetch(`${app.baseUrl}/api/autojoin/start`, {
+    method: 'POST', headers: { 'content-type': 'application/json', connection: 'close' },
+    body: JSON.stringify({ profile, ranks: ['5'], pokemon: ['Giratina'] })
+  });
+  await entered.promise;
+  const hostRequest = fetch(`${app.baseUrl}/api/hosted-lobby`, {
+    method: 'POST', headers: { 'content-type': 'application/json', connection: 'close' },
+    body: JSON.stringify({ profile, startDate: '2026/11/27 16:23:35', pokemonId: 'Giratina', currentWeather: 'unknown', gymColor: 'neutral', passType: 'remote', maxUsers: 5, weatherBoosted: false, guestLevel: 5, guestRating: 'all', private: false, invitationOnly: false, hot: false, megaPokemonEntry: false })
+  });
+  gate.resolve();
+  try {
+    const [searchResponse, hostResponse] = await Promise.all([searchRequest, hostRequest]);
+    assert.deepEqual([searchResponse.status, hostResponse.status].sort(), [200, 409]);
+    const saved = app.readStore();
+    assert.equal(saved.hostedLobby?.lobby?.state === 'active' && saved.autoJoin?.intent === 'search', false);
+  } finally { await close(app); }
+});
+
+test('hosting and Auto Join exclude each other and unsupported host capabilities return 501', async () => {
+  const profile = { trainerName: 'Albin123', trainerCode: '123456789012', level: 50, countryCode: 'se' };
+  const app = await startTestApp({
+    async listCurrentRaidBosses() {
+      return [{ rank: '1', pokemon: '25', displayName: 'Pikachu', image: '', shinyAvailable: true, maxCP20: null, maxCP25: null }];
+    }
+  }, { liveWrites: true });
+  try {
+    const unsupported = await fetch(`${app.baseUrl}/api/hosted-lobby`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ profile, startDate: '2026/11/27 16:23:35', pokemonId: '25', currentWeather: 'unknown', gymColor: 'neutral', passType: 'remote', maxUsers: 5, weatherBoosted: false, guestLevel: 5, guestRating: 'all', private: false, invitationOnly: false, hot: false, megaPokemonEntry: false })
+    });
+    assert.equal(unsupported.status, 501);
   } finally { await close(app); }
 });
 
