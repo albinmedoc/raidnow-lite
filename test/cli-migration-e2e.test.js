@@ -270,7 +270,7 @@ test('runs hosted lobby management through the real CLI subprocess contract', { 
       method: 'POST',
       body: JSON.stringify({
         profile,
-        startDate: '2026/11/27 16:23:35',
+        timeRemaining: 'under-five',
         pokemonId: '487',
         currentWeather: 'cloudy',
         gymColor: 'mystic',

@@ -125,8 +125,9 @@ async function runService(argv) {
       serviceSuccess(command, 'requested', { requested: true, verified: false });
       return;
     case 'host create':
-      if (!sameArgs(commandArgs, [
-        'host', 'create', '--start-date', '2026/11/27 16:23:35', '--pokemon', '487',
+      if (!/^\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2}$/.test(commandArgs[3] || '')) break;
+      if (!sameArgs(commandArgs.with(3, '<server-derived>'), [
+        'host', 'create', '--start-date', '<server-derived>', '--pokemon', '487',
         '--trainer-name', 'ProcessUser', '--trainer-level', '50', '--trainer-country', 'se',
         '--trainer-code-file', '-', '--current-weather', 'cloudy', '--max-users', '5',
         '--gym-color', 'mystic', '--pass-type', 'remote', '--guest-level', '5',

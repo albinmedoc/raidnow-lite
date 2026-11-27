@@ -44,6 +44,7 @@ test('mock adapter hosts and manages a deterministic demo lobby', async () => {
   const adapter = new MockRaidNowAdapter();
   const bosses = await adapter.listCurrentRaidBosses();
   assert.equal(bosses[0].pokemon, 'Giratina');
+  assert.ok(bosses.every((boss) => boss.image.startsWith('https://')));
   assert.deepEqual(await adapter.createHostedLobby({ pokemonId: 'Giratina' }, {}), { raidId: 'demo-host-1' });
   const initial = await adapter.getHostedLobbyStatus('demo-host-1');
   assert.equal(initial.players[0].id, 'demo-host-guest-1');

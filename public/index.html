@@ -141,9 +141,35 @@
       <form method="dialog" class="modal-header"><div><p class="eyebrow">HOSTA RAID</p><h2 id="hostLobbyDialogTitle">Skapa lobby</h2></div><button class="modal-close secondary" value="cancel" aria-label="Stäng">Stäng</button></form>
       <p class="muted">Raidrank och väderboostar hämtas automatiskt från Raid NOW:s aktuella metadata.</p>
       <form id="hostLobbyForm" class="form-grid">
-        <label class="wide">Pokémon<select id="hostPokemon" name="pokemonId" required></select></label>
-        <label>Starttid<input id="hostStartDate" name="startDate" type="datetime-local" required></label>
-        <label>Väder<select id="hostCurrentWeather" name="currentWeather"><option value="unknown">Okänt</option><option value="sunny">Soligt</option><option value="clear-night">Klart, natt</option><option value="partly-cloudy">Halvklart</option><option value="partly-cloudy-night">Halvklart, natt</option><option value="cloudy">Molnigt</option><option value="rain">Regn</option><option value="snow">Snö</option><option value="windy">Blåsigt</option><option value="fog">Dimma</option></select></label>
+        <fieldset class="wide host-choice-group">
+          <legend>Pokémon</legend>
+          <input id="hostPokemon" name="pokemonId" type="hidden">
+          <div id="hostPokemonGrid" class="host-pokemon-grid" role="radiogroup" aria-label="Välj raidboss"></div>
+        </fieldset>
+        <fieldset class="wide host-choice-group">
+          <legend>Tid kvar i raiden</legend>
+          <input id="hostRaidTimeRemaining" name="timeRemaining" type="hidden" value="at-least-five">
+          <div class="host-time-grid" role="radiogroup" aria-label="Tid kvar i raiden">
+            <button class="host-choice-option" type="button" value="under-five" data-host-time="under-five" role="radio" aria-checked="false" tabindex="-1"><strong>&lt; 5 min</strong><span>Mindre än fem minuter kvar</span></button>
+            <button class="host-choice-option selected" type="button" value="at-least-five" data-host-time="at-least-five" role="radio" aria-checked="true" tabindex="0"><strong>≥ 5 min</strong><span>Minst fem minuter kvar</span></button>
+          </div>
+        </fieldset>
+        <fieldset class="wide host-choice-group">
+          <legend>Väder i spelet</legend>
+          <input id="hostCurrentWeather" name="currentWeather" type="hidden" value="unknown">
+          <div id="hostWeatherGrid" class="host-weather-grid" role="radiogroup" aria-label="Väder i spelet">
+            <button class="host-weather-option selected" type="button" value="unknown" data-weather="unknown" role="radio" aria-checked="true" tabindex="0"><img src="https://pokemongo-get.com/wp-content/uploads/2021/01/question_mark.png" alt=""><span>Okänt</span></button>
+            <button class="host-weather-option" type="button" value="sunny" data-weather="sunny" role="radio" aria-checked="false" tabindex="-1"><img src="https://pokemongo-get.com/wp-content/themes/simplicity2-child/images/wethear/small/weatherIcon_small_sunny.png" alt=""><span>Soligt</span></button>
+            <button class="host-weather-option" type="button" value="clear-night" data-weather="clear-night" role="radio" aria-checked="false" tabindex="-1"><img src="https://pokemongo-get.com/wp-content/themes/simplicity2-child/images/wethear/small/weatherIcon_small_clear.png" alt=""><span>Klart, natt</span></button>
+            <button class="host-weather-option" type="button" value="partly-cloudy" data-weather="partly-cloudy" role="radio" aria-checked="false" tabindex="-1"><img src="https://pokemongo-get.com/wp-content/themes/simplicity2-child/images/wethear/small/weatherIcon_small_partlycloudy_day.png" alt=""><span>Halvklart</span></button>
+            <button class="host-weather-option" type="button" value="partly-cloudy-night" data-weather="partly-cloudy-night" role="radio" aria-checked="false" tabindex="-1"><img src="https://pokemongo-get.com/wp-content/themes/simplicity2-child/images/wethear/small/weatherIcon_small_partlycloudy_night.png" alt=""><span>Halvklart, natt</span></button>
+            <button class="host-weather-option" type="button" value="cloudy" data-weather="cloudy" role="radio" aria-checked="false" tabindex="-1"><img src="https://pokemongo-get.com/wp-content/themes/simplicity2-child/images/wethear/small/weatherIcon_small_cloudy.png" alt=""><span>Molnigt</span></button>
+            <button class="host-weather-option" type="button" value="rain" data-weather="rain" role="radio" aria-checked="false" tabindex="-1"><img src="https://pokemongo-get.com/wp-content/themes/simplicity2-child/images/wethear/small/weatherIcon_small_rain.png" alt=""><span>Regn</span></button>
+            <button class="host-weather-option" type="button" value="snow" data-weather="snow" role="radio" aria-checked="false" tabindex="-1"><img src="https://pokemongo-get.com/wp-content/themes/simplicity2-child/images/wethear/small/weatherIcon_small_snow.png" alt=""><span>Snö</span></button>
+            <button class="host-weather-option" type="button" value="windy" data-weather="windy" role="radio" aria-checked="false" tabindex="-1"><img src="https://pokemongo-get.com/wp-content/themes/simplicity2-child/images/wethear/small/weatherIcon_small_windy.png" alt=""><span>Blåsigt</span></button>
+            <button class="host-weather-option" type="button" value="fog" data-weather="fog" role="radio" aria-checked="false" tabindex="-1"><img src="https://pokemongo-get.com/wp-content/themes/simplicity2-child/images/wethear/small/weatherIcon_small_fog.png" alt=""><span>Dimma</span></button>
+          </div>
+        </fieldset>
         <label>Gymfärg<select id="hostGymColor" name="gymColor"><option value="neutral">Neutral</option><option value="valor">Valor</option><option value="mystic">Mystic</option><option value="instinct">Instinct</option></select></label>
         <label>Passtyp<select id="hostPassType" name="passType"><option value="remote">Remote</option><option value="local">På plats</option></select></label>
         <label>Max spelare<select id="hostMaxUsers" name="maxUsers"><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10" disabled>10</option></select></label>

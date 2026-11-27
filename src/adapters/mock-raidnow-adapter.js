@@ -1,7 +1,7 @@
 const SAMPLE_RAIDS = [
-  { rpl_id: 'demo-1', rpl_rank: '5', rpl_pokemon: 'Giratina', rpl_level: 50, rpl_maxuser: 10, cnt: 3, readycnt: 2, rpl_country_code: 'se', time: '08:42', rpl_code: '999988887777' },
-  { rpl_id: 'demo-2', rpl_rank: '5', rpl_pokemon: 'Zacian (Crowned Sword)', rpl_level: 47, rpl_maxuser: 10, cnt: 6, readycnt: 4, rpl_country_code: 'us', time: '12:10', rpl_code: '111122223333' },
-  { rpl_id: 'demo-3', rpl_rank: '4', rpl_pokemon: 'Mega Sableye', rpl_level: 44, rpl_maxuser: 8, cnt: 2, readycnt: 1, rpl_country_code: 'jp', time: '04:55', rpl_code: '444455556666' }
+  { rpl_id: 'demo-1', rpl_rank: '5', rpl_pokemon: 'Giratina', rpl_image: 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/487.png', rpl_level: 50, rpl_maxuser: 10, cnt: 3, readycnt: 2, rpl_country_code: 'se', time: '08:42', rpl_code: '999988887777' },
+  { rpl_id: 'demo-2', rpl_rank: '5', rpl_pokemon: 'Zacian (Crowned Sword)', rpl_image: 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/888.png', rpl_level: 47, rpl_maxuser: 10, cnt: 6, readycnt: 4, rpl_country_code: 'us', time: '12:10', rpl_code: '111122223333' },
+  { rpl_id: 'demo-3', rpl_rank: '4', rpl_pokemon: 'Mega Sableye', rpl_image: 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/302.png', rpl_level: 44, rpl_maxuser: 8, cnt: 2, readycnt: 1, rpl_country_code: 'jp', time: '04:55', rpl_code: '444455556666' }
 ];
 
 export class MockRaidNowAdapter {
@@ -24,7 +24,7 @@ export class MockRaidNowAdapter {
   async listCurrentRaidBosses() {
     return this.#raids.map((raid) => ({
       rank: String(raid.rpl_rank), pokemon: raid.rpl_pokemon, displayName: raid.rpl_pokemon,
-      image: '', shinyAvailable: false, maxCP20: null, maxCP25: null, waitingCount: raid.cnt ?? 0
+      image: raid.rpl_image, shinyAvailable: false, maxCP20: null, maxCP25: null, waitingCount: raid.cnt ?? 0
     }));
   }
 

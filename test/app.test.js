@@ -245,10 +245,13 @@ test('creates and manages one durable hosted lobby using only the session-owned 
     async startHostedLobby(raidId) { calls.push(['start', raidId]); return { started: true }; },
     async closeHostedLobby(raidId) { calls.push(['close', raidId]); return { closed: true }; }
   };
-  const app = await startTestApp(adapter, { liveWrites: true });
+  const app = await startTestApp(adapter, {
+    liveWrites: true,
+    now: () => Date.UTC(2026, 10, 27, 12, 30, 15)
+  });
   const createInput = {
     profile: { trainerName: 'Albin123', trainerCode: '123456789012', level: 50, countryCode: 'se' },
-    startDate: '2026/11/27 16:23:35', pokemonId: 'ピカチュウ(太陽の冠)', currentWeather: 'cloudy',
+    timeRemaining: 'under-five', pokemonId: 'ピカチュウ(太陽の冠)', currentWeather: 'cloudy',
     gymColor: 'mystic', passType: 'remote', maxUsers: 5, weatherBoosted: false,
     guestLevel: 5, guestRating: 'all', private: false, invitationOnly: false, hot: true, megaPokemonEntry: false
   };
@@ -264,6 +267,7 @@ test('creates and manages one durable hosted lobby using only the session-owned 
     const created = await createdResponse.json();
     assert.equal(created.state, 'active');
     assert.equal(created.raidId, 'raid-9');
+    assert.equal(calls[0][1].startDate, '2026/11/27 20:50:14');
     assert.equal(JSON.stringify(app.readStore()).includes(createInput.profile.trainerCode), false);
 
     const refreshed = await fetch(`${app.baseUrl}/api/hosted-lobby`).then((response) => response.json());
@@ -286,7 +290,15 @@ test('creates and manages one durable hosted lobby using only the session-owned 
     assert.equal(closed.status, 200);
     assert.equal((await closed.json()).state, 'none');
 
-    assert.deepEqual(calls.map((call) => call[0]), ['create', 'status', 'status', 'kick', 'start', 'close']);
+    const recreated = await fetch(`${app.baseUrl}/api/hosted-lobby`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...createInput, timeRemaining: 'at-least-five' })
+    });
+    assert.equal(recreated.status, 201);
+    assert.equal(calls.filter((call) => call[0] === 'create')[1][1].startDate, '2026/11/27 20:50:15');
+    assert.equal((await fetch(`${app.baseUrl}/api/hosted-lobby/close`, { method: 'POST' })).status, 200);
+
+    assert.deepEqual(calls.map((call) => call[0]), ['create', 'status', 'status', 'kick', 'start', 'close', 'create', 'close']);
     for (const call of calls.filter((entry) => ['status', 'kick', 'start', 'close'].includes(entry[0]))) assert.equal(call[1], 'raid-9');
   } finally { await close(app); }
 });
@@ -302,9 +314,10 @@ test('host create validates profile, current boss and semantic options before ad
   try {
     for (const body of [
       { pokemonId: '25' },
-      { profile: { trainerName: 'Albin123', trainerCode: '123456789012', level: 50, countryCode: 'se' }, pokemonId: 'missing', startDate: '2026/11/27 16:23:35' },
-      { profile: { trainerName: 'Albin123', trainerCode: '123456789012', level: 50, countryCode: 'se' }, pokemonId: '25', startDate: '2026/11/27 16:23:35', currentWeather: 'storm' },
-      { profile: { trainerName: 'Albin123', trainerCode: '123456789012', level: 50, countryCode: 'se' }, pokemonId: '25', startDate: '2026/99/99 99:99:99', currentWeather: 'unknown', gymColor: 'neutral', passType: 'remote', maxUsers: 5, weatherBoosted: false, guestLevel: 5, guestRating: 'all', private: false, invitationOnly: false, hot: false, megaPokemonEntry: false },
+      { profile: { trainerName: 'Albin123', trainerCode: '123456789012', level: 50, countryCode: 'se' }, pokemonId: 'missing', timeRemaining: 'under-five' },
+      { profile: { trainerName: 'Albin123', trainerCode: '123456789012', level: 50, countryCode: 'se' }, pokemonId: '25', timeRemaining: 'under-five', currentWeather: 'storm' },
+      { profile: { trainerName: 'Albin123', trainerCode: '123456789012', level: 50, countryCode: 'se' }, pokemonId: '25', timeRemaining: 'roughly-five', currentWeather: 'unknown', gymColor: 'neutral', passType: 'remote', maxUsers: 5, weatherBoosted: false, guestLevel: 5, guestRating: 'all', private: false, invitationOnly: false, hot: false, megaPokemonEntry: false },
+      { profile: { trainerName: 'Albin123', trainerCode: '123456789012', level: 50, countryCode: 'se' }, pokemonId: '25', startDate: '2026/11/27 16:23:35', currentWeather: 'unknown', gymColor: 'neutral', passType: 'remote', maxUsers: 5, weatherBoosted: false, guestLevel: 5, guestRating: 'all', private: false, invitationOnly: false, hot: false, megaPokemonEntry: false },
       { profile: { trainerName: 'Albin123', trainerCode: '123456789012', level: 50, countryCode: 'se' }, pokemonId: '25', startDate: '2026/02/29 12:00:00', currentWeather: 'unknown', gymColor: 'neutral', passType: 'remote', maxUsers: 5, weatherBoosted: false, guestLevel: 5, guestRating: 'all', private: false, invitationOnly: false, hot: false, megaPokemonEntry: false }
     ]) {
       const response = await fetch(`${app.baseUrl}/api/hosted-lobby`, {
@@ -337,7 +350,7 @@ test('concurrent host creation and Auto Join start admit only one workflow', asy
   });
   const hostRequest = fetch(`${app.baseUrl}/api/hosted-lobby`, {
     method: 'POST', headers: { 'content-type': 'application/json', connection: 'close' },
-    body: JSON.stringify({ profile, startDate: '2026/11/27 16:23:35', pokemonId: 'Giratina', currentWeather: 'unknown', gymColor: 'neutral', passType: 'remote', maxUsers: 5, weatherBoosted: false, guestLevel: 5, guestRating: 'all', private: false, invitationOnly: false, hot: false, megaPokemonEntry: false })
+    body: JSON.stringify({ profile, timeRemaining: 'under-five', pokemonId: 'Giratina', currentWeather: 'unknown', gymColor: 'neutral', passType: 'remote', maxUsers: 5, weatherBoosted: false, guestLevel: 5, guestRating: 'all', private: false, invitationOnly: false, hot: false, megaPokemonEntry: false })
   });
   await entered.promise;
   const searchRequest = fetch(`${app.baseUrl}/api/autojoin/start`, {
@@ -376,7 +389,7 @@ test('concurrent Auto Join start and host creation admit only one workflow', asy
   await entered.promise;
   const hostRequest = fetch(`${app.baseUrl}/api/hosted-lobby`, {
     method: 'POST', headers: { 'content-type': 'application/json', connection: 'close' },
-    body: JSON.stringify({ profile, startDate: '2026/11/27 16:23:35', pokemonId: 'Giratina', currentWeather: 'unknown', gymColor: 'neutral', passType: 'remote', maxUsers: 5, weatherBoosted: false, guestLevel: 5, guestRating: 'all', private: false, invitationOnly: false, hot: false, megaPokemonEntry: false })
+    body: JSON.stringify({ profile, timeRemaining: 'under-five', pokemonId: 'Giratina', currentWeather: 'unknown', gymColor: 'neutral', passType: 'remote', maxUsers: 5, weatherBoosted: false, guestLevel: 5, guestRating: 'all', private: false, invitationOnly: false, hot: false, megaPokemonEntry: false })
   });
   gate.resolve();
   try {
@@ -397,7 +410,7 @@ test('hosting and Auto Join exclude each other and unsupported host capabilities
   try {
     const unsupported = await fetch(`${app.baseUrl}/api/hosted-lobby`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ profile, startDate: '2026/11/27 16:23:35', pokemonId: '25', currentWeather: 'unknown', gymColor: 'neutral', passType: 'remote', maxUsers: 5, weatherBoosted: false, guestLevel: 5, guestRating: 'all', private: false, invitationOnly: false, hot: false, megaPokemonEntry: false })
+      body: JSON.stringify({ profile, timeRemaining: 'under-five', pokemonId: '25', currentWeather: 'unknown', gymColor: 'neutral', passType: 'remote', maxUsers: 5, weatherBoosted: false, guestLevel: 5, guestRating: 'all', private: false, invitationOnly: false, hot: false, megaPokemonEntry: false })
     });
     assert.equal(unsupported.status, 501);
   } finally { await close(app); }
