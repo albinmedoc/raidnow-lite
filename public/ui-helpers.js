@@ -106,6 +106,36 @@ export function workflowStatusPresentation(status) {
   };
 }
 
+export function createStatusOrdering() {
+  let revision = 0;
+  let mutations = 0;
+  return {
+    captureRead() { return revision; },
+    get mutationInFlight() { return mutations > 0; },
+    applyRead(startRevision, value, render) {
+      if (mutations > 0 || startRevision !== revision) return false;
+      revision += 1;
+      render(value);
+      return true;
+    },
+    beginMutation() {
+      mutations += 1;
+      revision += 1;
+      return revision;
+    },
+    finishMutation(mutationRevision, value, render) {
+      mutations = Math.max(0, mutations - 1);
+      if (mutationRevision !== revision) return false;
+      revision += 1;
+      if (typeof render === 'function') render(value);
+      return true;
+    },
+    isReadCurrent(startRevision) {
+      return mutations === 0 && startRevision === revision;
+    }
+  };
+}
+
 export function mutationStatusDecision(startRevision, currentRevision) {
   return {
     apply: startRevision === currentRevision,

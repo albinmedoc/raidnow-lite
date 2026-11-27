@@ -10,6 +10,7 @@ export class MockRaidNowAdapter {
   #polls = 0;
   #selection = null;
   #active = false;
+  #hostedLobby = null;
 
   constructor({ matchAfterPolls = 3, raids = SAMPLE_RAIDS } = {}) {
     this.#matchAfterPolls = matchAfterPolls;
@@ -18,6 +19,47 @@ export class MockRaidNowAdapter {
 
   async listRaids({ rank = 0 } = {}) {
     return rank && rank !== '0' ? this.#raids.filter((raid) => String(raid.rpl_rank) === String(rank)) : structuredClone(this.#raids);
+  }
+
+  async listCurrentRaidBosses() {
+    return this.#raids.map((raid) => ({
+      rank: String(raid.rpl_rank), pokemon: raid.rpl_pokemon, displayName: raid.rpl_pokemon,
+      image: '', shinyAvailable: false, maxCP20: null, maxCP25: null, waitingCount: raid.cnt ?? 0
+    }));
+  }
+
+  async createHostedLobby(input) {
+    this.#hostedLobby = {
+      id: 'demo-host-1', pokemonId: input.pokemonId, started: false, deleted: false,
+      players: [{ id: 'demo-host-guest-1', trainerName: 'DemoGuest', level: 44, countryCode: 'jp', rating: 0, ready: false, isMe: false }]
+    };
+    return { raidId: this.#hostedLobby.id };
+  }
+
+  async getHostedLobbyStatus(id) {
+    if (!this.#hostedLobby || this.#hostedLobby.id !== String(id) || this.#hostedLobby.deleted) {
+      return { players: [], count: 0, readyCount: 0, raidDeleted: true };
+    }
+    const players = structuredClone(this.#hostedLobby.players);
+    return { players, count: players.length, readyCount: players.filter((player) => player.ready).length, raidDeleted: false };
+  }
+
+  async kickHostedGuest(id, guestId) {
+    if (!this.#hostedLobby || this.#hostedLobby.id !== String(id)) throw new Error('Hosted lobby not found.');
+    this.#hostedLobby.players = this.#hostedLobby.players.filter((player) => player.id !== String(guestId));
+    return { kicked: true };
+  }
+
+  async startHostedLobby(id) {
+    if (!this.#hostedLobby || this.#hostedLobby.id !== String(id)) throw new Error('Hosted lobby not found.');
+    this.#hostedLobby.started = true;
+    return { started: true };
+  }
+
+  async closeHostedLobby(id) {
+    if (!this.#hostedLobby || this.#hostedLobby.id !== String(id)) throw new Error('Hosted lobby not found.');
+    this.#hostedLobby.deleted = true;
+    return { closed: true };
   }
 
   async joinRaidFast(id) {

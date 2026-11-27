@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const rootUrl = new URL('../', import.meta.url);
-const cliRef = '87446b64403777009dbca09c158d55a8f661521e';
+const cliRef = '1903356bc0533df16af900775f6f3eaa0ca98cb5';
 
 test('container builds and verifies the exact pinned Raid NOW CLI source', async () => {
   const dockerfile = await readFile(new URL('Dockerfile', rootUrl), 'utf8');
@@ -30,7 +30,7 @@ test('final Node Alpine image contains only the pinned CLI binary and verifies i
   assert.match(dockerfile, /\\"command\\":\\"version\\"/);
   assert.match(dockerfile, /\\"status\\":\\"shown\\"/);
   assert.match(dockerfile, /\\"version\\":\\"\$\{RAIDNOW_CLI_REF\}\\"/);
-  for (const command of ['history joined', 'history kicked', 'blocks list']) {
+  for (const command of ['history joined', 'history kicked', 'blocks list', 'host create', 'host status', 'host start', 'host kick', 'host close']) {
     assert.match(dockerfile, new RegExp(`/usr/local/bin/raidnow ${command} --help`));
   }
 

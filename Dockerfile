@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-ARG RAIDNOW_CLI_REF=87446b64403777009dbca09c158d55a8f661521e
+ARG RAIDNOW_CLI_REF=1903356bc0533df16af900775f6f3eaa0ca98cb5
 
 FROM golang:1.27.4-alpine AS raidnow-cli-builder
 
@@ -49,7 +49,12 @@ RUN output="$(/usr/local/bin/raidnow --json version)" \
     && test "${output}" = "${expected}" \
     && /usr/local/bin/raidnow history joined --help >/dev/null \
     && /usr/local/bin/raidnow history kicked --help >/dev/null \
-    && /usr/local/bin/raidnow blocks list --help >/dev/null
+    && /usr/local/bin/raidnow blocks list --help >/dev/null \
+    && /usr/local/bin/raidnow host create --help >/dev/null \
+    && /usr/local/bin/raidnow host status --help >/dev/null \
+    && /usr/local/bin/raidnow host start --help >/dev/null \
+    && /usr/local/bin/raidnow host kick --help >/dev/null \
+    && /usr/local/bin/raidnow host close --help >/dev/null
 
 EXPOSE 4173
 VOLUME ["/app/data"]

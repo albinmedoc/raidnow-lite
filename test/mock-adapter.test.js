@@ -40,6 +40,21 @@ test('mock adapter exposes demo profile history and blocks', async () => {
   assert.equal((await adapter.listBlocks()).length, 1);
 });
 
+test('mock adapter hosts and manages a deterministic demo lobby', async () => {
+  const adapter = new MockRaidNowAdapter();
+  const bosses = await adapter.listCurrentRaidBosses();
+  assert.equal(bosses[0].pokemon, 'Giratina');
+  assert.deepEqual(await adapter.createHostedLobby({ pokemonId: 'Giratina' }, {}), { raidId: 'demo-host-1' });
+  const initial = await adapter.getHostedLobbyStatus('demo-host-1');
+  assert.equal(initial.players[0].id, 'demo-host-guest-1');
+  assert.equal(initial.raidDeleted, false);
+  assert.deepEqual(await adapter.kickHostedGuest('demo-host-1', 'demo-host-guest-1'), { kicked: true });
+  assert.equal((await adapter.getHostedLobbyStatus('demo-host-1')).count, 0);
+  assert.deepEqual(await adapter.startHostedLobby('demo-host-1'), { started: true });
+  assert.deepEqual(await adapter.closeHostedLobby('demo-host-1'), { closed: true });
+  assert.equal((await adapter.getHostedLobbyStatus('demo-host-1')).raidDeleted, true);
+});
+
 test('mock adapter leaves a matched demo raid without upstream writes', async () => {
   const adapter = new MockRaidNowAdapter({ matchAfterPolls: 1 });
   const raid = (await adapter.listRaids())[0];

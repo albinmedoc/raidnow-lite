@@ -19,6 +19,11 @@ const selection = {
   weatherBoost: 2,
   hostLevel: 70
 };
+const input = {
+  startDate: '2026/11/27 16:23:35', pokemonId: 'ピカチュウ(太陽の冠)', currentWeather: 'cloudy',
+  gymColor: 'mystic', passType: 'remote', maxUsers: 5, weatherBoosted: true,
+  guestLevel: 5, guestRating: 'all', private: false, invitationOnly: false, hot: true, megaPokemonEntry: false
+};
 
 function success(command, data, status = 'success') {
   return { schemaVersion: 1, ok: true, command, status, data, warnings: [] };
@@ -69,7 +74,11 @@ test('blocks every write locally by default without invoking the runner', async 
     () => adapter.joinRaidFast('raid-1', profile),
     () => adapter.cancelMatching(),
     () => adapter.markRaidReady('raid-1'),
-    () => adapter.leaveRaid('raid-1')
+    () => adapter.leaveRaid('raid-1'),
+    () => adapter.createHostedLobby(input, profile),
+    () => adapter.startHostedLobby('raid-1'),
+    () => adapter.kickHostedGuest('raid-1', 'guest-1'),
+    () => adapter.closeHostedLobby('raid-1')
   ];
   for (const invoke of writes) {
     await assert.rejects(
@@ -235,6 +244,57 @@ test('maps every worker operation to the primitive CLI command', async () => {
     signal
   }));
   assert.equal(runner.calls.flatMap((call) => call.args).includes(profile.trainerCode), false);
+});
+
+test('maps every hosted-lobby operation to the semantic CLI contract', async () => {
+  const signal = new AbortController().signal;
+  const status = {
+    players: [{ id: 'guest-7', trainerName: 'Guest', level: 44, country: 'jp', rating: 0, ready: false, isMe: false }],
+    count: 1, readyCount: 0, raidDeleted: false
+  };
+  const { adapter, runner } = createAdapter([
+    success('host create', { created: true, raidId: 'raid-9' }, 'created'),
+    success('host status', status, 'listed'),
+    success('host kick', { kicked: true, raidId: 'raid-9', guestId: 'guest-7' }, 'kicked'),
+    success('host start', { started: true, raidId: 'raid-9' }, 'started'),
+    success('host close', { closed: true, raidId: 'raid-9' }, 'closed')
+  ]);
+
+  assert.deepEqual(await adapter.createHostedLobby(input, profile, { signal }), { raidId: 'raid-9' });
+  assert.deepEqual(await adapter.getHostedLobbyStatus('raid-9', { signal }), {
+    players: [{ id: 'guest-7', trainerName: 'Guest', level: 44, countryCode: 'jp', rating: 0, ready: false, isMe: false }],
+    count: 1, readyCount: 0, raidDeleted: false
+  });
+  assert.deepEqual(await adapter.kickHostedGuest('raid-9', 'guest-7', { signal }), { kicked: true });
+  assert.deepEqual(await adapter.startHostedLobby('raid-9', { signal }), { started: true });
+  assert.deepEqual(await adapter.closeHostedLobby('raid-9', { signal }), { closed: true });
+
+  assertCall(runner.calls[0], [
+    'host', 'create', '--start-date', input.startDate, '--pokemon', input.pokemonId,
+    '--trainer-name', 'Albin123', '--trainer-level', '50', '--trainer-country', 'se', '--trainer-code-file', '-',
+    '--current-weather', 'cloudy', '--max-users', '5', '--gym-color', 'mystic', '--pass-type', 'remote',
+    '--guest-level', '5', '--guest-rating', 'all', '--weather-boosted', '--hot'
+  ], { stdin: profile.trainerCode, signal });
+  assertCall(runner.calls[1], ['host', 'status', '--raid-id', 'raid-9'], { signal });
+  assertCall(runner.calls[2], ['host', 'kick', '--raid-id', 'raid-9', '--guest-id', 'guest-7'], { signal });
+  assertCall(runner.calls[3], ['host', 'start', '--raid-id', 'raid-9'], { signal });
+  assertCall(runner.calls[4], ['host', 'close', '--raid-id', 'raid-9'], { signal });
+  assert.equal(runner.calls.flatMap((call) => call.args).includes(profile.trainerCode), false);
+});
+
+test('rejects malformed hosted-lobby CLI responses', async () => {
+  for (const data of [null, {}, { created: false, raidId: 'raid-9' }, { created: true, raidId: '' }, { created: true, raidId: 9 }]) {
+    const { adapter } = createAdapter([success('host create', data, 'created')]);
+    await assert.rejects(() => adapter.createHostedLobby(input, profile), (error) => error.code === 'CLI_PROTOCOL_ERROR');
+  }
+  for (const data of [
+    { players: [], count: -1, readyCount: 0, raidDeleted: false },
+    { players: [], count: 0, readyCount: 0, raidDeleted: 'false' },
+    { players: [{ id: 'g', ready: 0, isMe: false }], count: 1, readyCount: 0, raidDeleted: false }
+  ]) {
+    const { adapter } = createAdapter([success('host status', data, 'listed')]);
+    await assert.rejects(() => adapter.getHostedLobbyStatus('raid-9'), (error) => error.code === 'CLI_PROTOCOL_ERROR');
+  }
 });
 
 test('rejects every non-boolean queue presence value as a protocol error', async () => {
